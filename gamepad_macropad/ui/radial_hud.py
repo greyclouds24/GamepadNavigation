@@ -1,4 +1,4 @@
-"""Bottom-center radial keyboard graphic with live sector highlight."""
+"""Bottom-center dual radial keyboard graphic with live sector highlight."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import math
 import tkinter as tk
 from typing import TYPE_CHECKING
 
-from ..radial import RADIAL_LABELS, items_for
+from ..radial import items_for
 from . import theme
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -25,20 +25,20 @@ class RadialHud:
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
         try:
-            self.win.attributes("-alpha", 0.82)
+            self.win.attributes("-alpha", 0.85)
         except tk.TclError:
             pass
         self.win.configure(bg=theme.BG)
         self.win.protocol("WM_DELETE_WINDOW", lambda: None)
 
-        pad = theme.px(8)
+        pad = theme.px(10)
         self.canvas = tk.Canvas(
             self.win, bg=theme.BG, highlightthickness=0,
-            width=theme.px(460), height=theme.px(130),
+            width=theme.px(360), height=theme.px(200),
         )
         self.canvas.pack(padx=pad, pady=pad)
         self._hint = self.canvas.create_text(
-            theme.px(230), theme.px(118),
+            theme.px(180), theme.px(188),
             text="", fill=theme.FG_DIM, font=theme.FONT_SMALL,
         )
         self._place()
@@ -81,11 +81,15 @@ class RadialHud:
             return
         key = (
             status.number_mode,
-            status.radial_opener,
-            status.radial_index,
-            status.radial_glyph,
-            status.shift_held,
+            status.left_layer,
+            status.right_layer,
+            status.left_radial_index,
+            status.left_radial_glyph,
+            status.right_radial_index,
+            status.right_radial_glyph,
             status.ctrl_held,
+            round(status.lx, 2), round(status.ly, 2),
+            round(status.rx, 2), round(status.ry, 2),
         )
         if key == self._last_key:
             return
@@ -95,35 +99,33 @@ class RadialHud:
     def _redraw(self, status: "EngineStatus") -> None:
         c = self.canvas
         c.delete("dial")
-        number_mode = status.number_mode
-        active = status.radial_opener
-        # Four dials in a row; enlarge / emphasize the active opener.
-        centers = (
-            (theme.px(58), theme.px(55), "LT"),
-            (theme.px(155), theme.px(55), "LB"),
-            (theme.px(305), theme.px(55), "RB"),
-            (theme.px(402), theme.px(55), "RT"),
+        left_items = items_for("left", layer=status.left_layer, number_mode=status.number_mode)
+        right_items = items_for("right", layer=status.right_layer, number_mode=status.number_mode)
+        left_label = "Left" + (" · alt" if status.left_layer else "")
+        right_label = "Right" + (" · alt" if status.right_layer else "")
+        r = theme.px(68)
+        self._draw_dial(
+            theme.px(90), theme.px(88), r, left_items,
+            highlight=status.left_radial_index if status.left_radial_glyph else None,
+            label=left_label,
+            stick=(status.lx, status.ly),
         )
-        for cx, cy, opener in centers:
-            items = items_for(opener, number_mode=number_mode)
-            is_active = opener == active
-            r = theme.px(42) if is_active else theme.px(32)
-            self._draw_dial(
-                cx, cy, r, items,
-                highlight=status.radial_index if is_active else None,
-                dim=not items,
-                label=RADIAL_LABELS.get(opener, opener),
-            )
+        self._draw_dial(
+            theme.px(270), theme.px(88), r, right_items,
+            highlight=status.right_radial_index if status.right_radial_glyph else None,
+            label=right_label,
+            stick=(status.rx, status.ry),
+        )
         mods = []
         if status.number_mode:
             mods.append("NUM")
-        if status.shift_held:
-            mods.append("SHIFT")
         if status.ctrl_held:
             mods.append("CTRL")
-        preview = status.radial_glyph or "·"
-        hint = f"{preview}" + (f"  [{' '.join(mods)}]" if mods else "")
-        c.itemconfigure(self._hint, text=hint)
+        preview_parts = [g for g in (status.left_radial_glyph, status.right_radial_glyph) if g]
+        preview = " · ".join(preview_parts) if preview_parts else "aim ≥95% · release to type"
+        if mods:
+            preview += f"  [{' '.join(mods)}]"
+        c.itemconfigure(self._hint, text=preview)
 
     def _draw_dial(
         self,
@@ -131,31 +133,29 @@ class RadialHud:
         items: tuple[str, ...],
         *,
         highlight: int | None,
-        dim: bool,
         label: str,
+        stick: tuple[float, float],
     ) -> None:
         c = self.canvas
         n = max(1, len(items))
-        outline = theme.BORDER if dim or not items else theme.FG_DIM
-        c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=outline, width=2, tags="dial")
-        if not items:
-            c.create_text(cx, cy, text="—", fill=theme.FG_DIM, font=theme.FONT_SMALL, tags="dial")
-            return
+        c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=theme.FG_DIM, width=2, tags="dial")
+        # Aim ring at 95% radius (visual cue for the select threshold).
+        aim_r = int(r * 0.95)
+        c.create_oval(
+            cx - aim_r, cy - aim_r, cx + aim_r, cy + aim_r,
+            outline=theme.BORDER, width=1, dash=(2, 3), tags="dial",
+        )
         for i, glyph in enumerate(items):
-            # Sector i centered on angle i * step (0 = up).
             step = 2.0 * math.pi / n
             a0 = i * step - step / 2.0
             a1 = a0 + step
-            # Wedge outline (approximate with arc + spokes drawn lightly).
             on = highlight is not None and i == highlight
             mid = i * step
-            # Label position along radius.
             tx = cx + math.sin(mid) * (r * 0.62)
             ty = cy - math.cos(mid) * (r * 0.62)
-            # Highlight wedge as a thick pie slice via chord polygon.
             if on:
                 points = [cx, cy]
-                steps = 8
+                steps = 10
                 for s in range(steps + 1):
                     a = a0 + (a1 - a0) * (s / steps)
                     points.extend([cx + math.sin(a) * r, cy - math.cos(a) * r])
@@ -165,13 +165,20 @@ class RadialHud:
             c.create_text(
                 tx, ty,
                 text=glyph,
-                fill="#ffffff" if on else (theme.FG_DIM if dim else theme.FG),
-                font=theme.FONT_BOLD if on else theme.FONT_SMALL,
+                fill="#ffffff" if on else theme.FG,
+                font=theme.FONT_BOLD if on else theme.FONT,
                 tags="dial",
             )
+        # Stick tip marker (clamped to the dial).
+        sx, sy = stick
+        mag = min(1.0, math.hypot(sx, sy))
+        if mag > 0.02:
+            mx = cx + (sx / mag if mag else 0) * mag * r
+            my = cy + (sy / mag if mag else 0) * mag * r
+            c.create_oval(mx - 4, my - 4, mx + 4, my + 4, fill=theme.ACCENT, outline="", tags="dial")
         c.create_text(
-            cx, cy + r + theme.px(10),
-            text=label.replace("Left ", "L").replace("Right ", "R").replace("trigger", "Trig").replace("bumper", "Bump"),
+            cx, cy + r + theme.px(14),
+            text=label,
             fill=theme.ACCENT if highlight is not None else theme.FG_DIM,
             font=theme.FONT_SMALL,
             tags="dial",

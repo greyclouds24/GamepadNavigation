@@ -14,7 +14,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gamepad_macropad import keys  # noqa: E402
 from gamepad_macropad.config import BUTTONS, Binding, Config, Macro, load_config, save_config  # noqa: E402
 from gamepad_macropad.engine import shape_axis, shape_radial  # noqa: E402
-from gamepad_macropad.radial import select_radial, stick_angle_sector  # noqa: E402
+from gamepad_macropad.radial import (  # noqa: E402
+    AIM_THRESHOLD,
+    LEFT_LAYERS,
+    RIGHT_LAYERS,
+    select_side,
+    stick_angle_sector,
+)
 
 
 # --- keys ------------------------------------------------------------------------------
@@ -192,13 +198,32 @@ def test_retired_snap_special_becomes_middle_mouse():
 
 
 def test_radial_sector_selection():
-    # Stick up → sector 0 (first letter E on LT).
+    # Stick up at full deflection → sector 0 (T on left default).
     assert stick_angle_sector(0.0, -1.0, 6) == 0
     assert stick_angle_sector(0.0, 0.0, 6) is None
-    sel = select_radial("LT", 0.0, -1.0, 0.0, 0.0, number_mode=False)
-    assert sel is not None and sel.glyph == "E"
-    sel_num = select_radial("LT", 0.0, -1.0, 0.0, 0.0, number_mode=True)
+    # Below 95% is ignored for selection.
+    assert stick_angle_sector(0.0, -0.90, 6, deadzone=AIM_THRESHOLD) is None
+    assert stick_angle_sector(0.0, -0.96, 6, deadzone=AIM_THRESHOLD) == 0
+
+    sel = select_side("left", 0.0, -1.0, layer=0)
+    assert sel is not None and sel.glyph == "T" and sel.index == 0
+    assert LEFT_LAYERS[0] == ("T", "H", "Y", "D", "X", "?")
+    assert RIGHT_LAYERS[0] == ("S", "P", "F", "L", "K", "!")
+
+    # Alt layers via stick click.
+    sel_alt = select_side("left", 0.0, -1.0, layer=1)
+    assert sel_alt is not None and sel_alt.glyph == "R"
+    sel_right_alt = select_side("right", 0.0, -1.0, layer=1)
+    assert sel_right_alt is not None and sel_right_alt.glyph == "N"
+
+    # Clockwise from up: next sector is to the right.
+    # Angle near 60° (π/3) → sector 1.
+    angle = math.pi / 3
+    x, y = math.sin(angle), -math.cos(angle)
+    sel_h = select_side("left", x, y, layer=0)
+    assert sel_h is not None and sel_h.glyph == "H"
+
+    sel_num = select_side("left", 0.0, -1.0, number_mode=True)
     assert sel_num is not None and sel_num.glyph == "1"
-    # Right stick aims RT radial.
-    sel_rt = select_radial("RT", 0.0, 0.0, 0.0, -1.0, number_mode=False)
-    assert sel_rt is not None and sel_rt.glyph == "N"
+    sel_rt = select_side("right", 0.0, -1.0, layer=0)
+    assert sel_rt is not None and sel_rt.glyph == "S"

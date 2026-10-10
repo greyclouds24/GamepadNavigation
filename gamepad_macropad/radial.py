@@ -1,65 +1,73 @@
-"""Radial on-screen keyboard layouts and stick → sector selection."""
+"""Dual always-on radial keyboard layouts and stick → sector selection.
+
+Left and right sticks each drive a 6-sector wheel. Stick clicks toggle each
+side between its default and alternate letter layer. Vowels and punctuation
+live on discrete buttons (handled by the engine), not on the radials.
+"""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
 
-# Six most-common letter groups (frequency order), one radial each.
+# Layer 0 = default, layer 1 = stick-click alternate. Clockwise from top (up).
+LEFT_LAYERS: tuple[tuple[str, ...], ...] = (
+    ("T", "H", "Y", "D", "X", "?"),
+    ("R", "G", "W", "C", "V", "J"),
+)
+
+RIGHT_LAYERS: tuple[tuple[str, ...], ...] = (
+    ("S", "P", "F", "L", "K", "!"),
+    ("N", "M", "B", "U", "Z", "Q"),
+)
+
+# Number mode: six glyphs per side (same aim / release rules).
+LEFT_NUMBERS: tuple[str, ...] = ("1", "2", "3", "4", "5", ".")
+RIGHT_NUMBERS: tuple[str, ...] = ("6", "7", "8", "9", "0", "-")
+
+SIDES = ("left", "right")
+
+# Aim must reach this fraction of full deflection before a sector is selected.
+AIM_THRESHOLD = 0.95
+# After aiming, releasing below this commits the selected glyph.
+RELEASE_THRESHOLD = 0.45
+
+# Back-compat aliases used by the settings legend / older tests.
 RADIAL_LETTERS: dict[str, tuple[str, ...]] = {
-    "LT": ("E", "A", "R", "I", "O", "T"),
-    "RT": ("N", "S", "L", "C", "U", "D"),
-    "LB": ("P", "M", "H", "G", "B", "F"),
-    "RB": ("Y", "W", "K", "V", "X", "Z"),
+    "left": LEFT_LAYERS[0],
+    "right": RIGHT_LAYERS[0],
+    "left_alt": LEFT_LAYERS[1],
+    "right_alt": RIGHT_LAYERS[1],
 }
-
-# Number mode: only triggers; five digits each (sixth sector unused).
 RADIAL_NUMBERS: dict[str, tuple[str, ...]] = {
-    "LT": ("1", "2", "3", "4", "5"),
-    "RT": ("6", "7", "8", "9", "0"),
-    "LB": (),
-    "RB": (),
+    "left": LEFT_NUMBERS,
+    "right": RIGHT_NUMBERS,
 }
-
-# Which stick aims which opener.
-RADIAL_STICK: dict[str, str] = {
-    "LT": "left",
-    "LB": "left",
-    "RT": "right",
-    "RB": "right",
-}
-
 RADIAL_LABELS: dict[str, str] = {
-    "LT": "Left trigger",
-    "RT": "Right trigger",
-    "LB": "Left bumper",
-    "RB": "Right bumper",
+    "left": "Left stick (default)",
+    "left_alt": "Left stick (LS click)",
+    "right": "Right stick (default)",
+    "right_alt": "Right stick (RS click)",
 }
-
-OPENERS = ("LT", "LB", "RT", "RB")
-
-# Stick must leave this radius before a sector is active.
-AIM_DEADZONE = 0.35
 
 
 @dataclass(frozen=True)
 class RadialSelection:
-    opener: str
+    side: str
     index: int
     glyph: str
+    layer: int
 
 
-def items_for(opener: str, *, number_mode: bool) -> tuple[str, ...]:
-    table = RADIAL_NUMBERS if number_mode else RADIAL_LETTERS
-    return table.get(opener, ())
+def items_for(side: str, *, layer: int = 0, number_mode: bool = False) -> tuple[str, ...]:
+    if number_mode:
+        return LEFT_NUMBERS if side == "left" else RIGHT_NUMBERS
+    layers = LEFT_LAYERS if side == "left" else RIGHT_LAYERS
+    return layers[max(0, min(layer, len(layers) - 1))]
 
 
-def sector_count(opener: str, *, number_mode: bool) -> int:
-    return len(items_for(opener, number_mode=number_mode))
-
-
-def stick_angle_sector(x: float, y: float, n: int, *, deadzone: float = AIM_DEADZONE) -> int | None:
-    """Map stick (SDL y+ down) to sector index 0..n-1, or None if centered.
+def stick_angle_sector(x: float, y: float, n: int, *, deadzone: float = AIM_THRESHOLD) -> int | None:
+    """Map stick (SDL y+ down) to sector index 0..n-1, or None if below threshold.
 
     Sector 0 is centered on stick-up, then clockwise.
     """
@@ -68,26 +76,24 @@ def stick_angle_sector(x: float, y: float, n: int, *, deadzone: float = AIM_DEAD
     mag = math.hypot(x, y)
     if mag < deadzone:
         return None
-    # Mathematical angle: 0 = up, increasing clockwise, in [0, 2π).
     # atan2(x, -y): up (0,-1) → 0; right (1,0) → π/2.
     angle = math.atan2(x, -y) % (2.0 * math.pi)
-    sector = int(angle / (2.0 * math.pi / n)) % n
-    return sector
+    return int(angle / (2.0 * math.pi / n)) % n
 
 
-def select_radial(
-    opener: str,
-    lx: float, ly: float, rx: float, ry: float,
+def select_side(
+    side: str,
+    x: float,
+    y: float,
     *,
-    number_mode: bool,
-    deadzone: float = AIM_DEADZONE,
+    layer: int = 0,
+    number_mode: bool = False,
+    aim_threshold: float = AIM_THRESHOLD,
 ) -> RadialSelection | None:
-    items = items_for(opener, number_mode=number_mode)
+    items = items_for(side, layer=layer, number_mode=number_mode)
     if not items:
         return None
-    stick = RADIAL_STICK.get(opener, "left")
-    x, y = (lx, ly) if stick == "left" else (rx, ry)
-    idx = stick_angle_sector(x, y, len(items), deadzone=deadzone)
+    idx = stick_angle_sector(x, y, len(items), deadzone=aim_threshold)
     if idx is None:
         return None
-    return RadialSelection(opener=opener, index=idx, glyph=items[idx])
+    return RadialSelection(side=side, index=idx, glyph=items[idx], layer=layer)

@@ -12,7 +12,7 @@ from .. import __version__
 from ..config import BUTTON_LABELS, BUTTONS, Binding, Config, Macro, config_path, log_path
 from ..engine import EngineStatus, shape_axis, shape_radial
 from ..macros import summarize
-from ..radial import RADIAL_LABELS, RADIAL_LETTERS, RADIAL_NUMBERS
+from ..radial import LEFT_LAYERS, LEFT_NUMBERS, RIGHT_LAYERS, RIGHT_NUMBERS
 from . import theme
 from .binding_dialog import BindingDialog
 from .dialogs import confirm, labeled_scale
@@ -302,12 +302,12 @@ class SettingsWindow(tk.Toplevel):
 
     def _build_keyboard(self) -> None:
         t = self.tab_keyboard
-        ttk.Label(t, text="Keyboard mode (radial dials)", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(t, text="Keyboard mode (dual radials)", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             t,
-            text="Back / View switches mouse ↔ keyboard. Hold a trigger or bumper and aim with "
-                 "that side’s stick; release to type the highlighted letter. Pause / Guide toggles "
-                 "number mode.",
+            text="Back / View switches mouse ↔ keyboard. Both stick wheels are always live: "
+                 "push a stick past 95% to aim a letter, then release toward center to type it. "
+                 "Guide / Pause toggles number mode.",
             style="Dim.TLabel", wraplength=theme.px(700), justify="left",
         ).pack(anchor="w", pady=(0, 8))
 
@@ -322,39 +322,47 @@ class SettingsWindow(tk.Toplevel):
         frame = ttk.Frame(t)
         frame.pack(fill="both", expand=True)
         self.radial_tree = ttk.Treeview(
-            frame, columns=("opener", "letters", "numbers"), show="headings", selectmode="browse",
+            frame, columns=("wheel", "layer0", "layer1", "numbers"), show="headings", selectmode="browse",
         )
-        self.radial_tree.heading("opener", text="Opener")
-        self.radial_tree.heading("letters", text="Letter radial (clockwise from up)")
+        self.radial_tree.heading("wheel", text="Wheel")
+        self.radial_tree.heading("layer0", text="Default (clockwise from up)")
+        self.radial_tree.heading("layer1", text="Alt (stick click)")
         self.radial_tree.heading("numbers", text="Number mode")
-        self.radial_tree.column("opener", width=140, anchor="w")
-        self.radial_tree.column("letters", width=280, anchor="w")
-        self.radial_tree.column("numbers", width=160, anchor="w")
+        self.radial_tree.column("wheel", width=100, anchor="w")
+        self.radial_tree.column("layer0", width=220, anchor="w")
+        self.radial_tree.column("layer1", width=220, anchor="w")
+        self.radial_tree.column("numbers", width=140, anchor="w")
         sb = ttk.Scrollbar(frame, orient="vertical", command=self.radial_tree.yview)
         self.radial_tree.configure(yscrollcommand=sb.set)
         self.radial_tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        for opener in ("LT", "RT", "LB", "RB"):
-            self.radial_tree.insert("", "end", iid=opener, values=("", "", ""))
+        for side in ("left", "right"):
+            self.radial_tree.insert("", "end", iid=side, values=("", "", "", ""))
 
         extras = ttk.LabelFrame(t, text="Also in keyboard mode", padding=10)
         extras.pack(fill="x", pady=(10, 0))
         ttk.Label(
             extras,
-            text="Y → J · X → Q · B → . · A → ,\n"
-                 "D-pad ↑ space · → enter · ← backspace · ↓ ctrl\n"
-                 "LS click = Shift · RS click = Ctrl · Guide / Pause = number mode",
+            text="Vowels: LB → A · LT → E · RB → I · RT → O\n"
+                 "A → space · B → backspace · D-pad ↑ . · ← , · → enter · ↓ ctrl\n"
+                 "LS click swaps left wheel layer · RS click swaps right wheel layer",
             style="Dim.TLabel", justify="left",
         ).pack(anchor="w")
         self._refresh_radial_legend()
 
     def _refresh_radial_legend(self) -> None:
-        for opener in ("LT", "RT", "LB", "RB"):
-            letters = " ".join(RADIAL_LETTERS.get(opener, ()))
-            numbers = " ".join(RADIAL_NUMBERS.get(opener, ())) or "—"
-            self.radial_tree.item(opener, values=(
-                RADIAL_LABELS.get(opener, opener), letters, numbers,
-            ))
+        self.radial_tree.item("left", values=(
+            "Left stick",
+            " ".join(LEFT_LAYERS[0]),
+            " ".join(LEFT_LAYERS[1]),
+            " ".join(LEFT_NUMBERS),
+        ))
+        self.radial_tree.item("right", values=(
+            "Right stick",
+            " ".join(RIGHT_LAYERS[0]),
+            " ".join(RIGHT_LAYERS[1]),
+            " ".join(RIGHT_NUMBERS),
+        ))
 
     def _keyboard_opts_changed(self) -> None:
         self.cfg.keyboard.show_hud = bool(self.v_hud.get())

@@ -26,7 +26,7 @@ from . import keys, win_input
 from .config import Binding, Config
 from .gamepad import GamepadReader, PadState
 from .macros import MacroPlayer
-from .radial import OPENERS, select_radial
+from .radial import RELEASE_THRESHOLD, SIDES, select_side
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +53,13 @@ class EngineStatus:
     number_mode: bool = False
     playing_macro: str | None = None
     pressed: frozenset[str] = frozenset()
+    left_layer: int = 0
+    right_layer: int = 0
+    left_radial_index: int = -1
+    left_radial_glyph: str = ""
+    right_radial_index: int = -1
+    right_radial_glyph: str = ""
+    # Legacy single-focus fields (HUD / overlay still read these).
     radial_opener: str = ""
     radial_index: int = -1
     radial_glyph: str = ""
@@ -145,11 +152,14 @@ class Engine:
         self._release_requested = False
         self._rescan_requested = False
         self._number_mode = False
-        self._radial_held: set[str] = set()
-        self._radial_selection: dict[str, str] = {}  # opener → glyph while held
+        self._left_layer = 0
+        self._right_layer = 0
+        # Per-side aim state: glyph/index while armed, cleared on release-commit.
+        self._radial_selection: dict[str, str] = {}
+        self._radial_index: dict[str, int] = {}
+        self._radial_armed: dict[str, bool] = {"left": False, "right": False}
         self._shift_held = False
         self._ctrl_held = False
-        self._ctrl_from_dpad = False
 
     # -- public API (any thread) ---------------------------------------------
 
@@ -183,8 +193,9 @@ class Engine:
         self._request_release_all()
         self._cfg.input_mode = mode
         self._number_mode = False
-        self._radial_held.clear()
-        self._radial_selection.clear()
+        self._left_layer = 0
+        self._right_layer = 0
+        self._clear_radial_state()
         self._ui_event("input_mode", {"mode": mode})
 
     def toggle_input_mode(self) -> None:
@@ -328,7 +339,13 @@ class Engine:
             number_mode=self._number_mode,
             playing_macro=self._player.playing,
             pressed=state.buttons if state else frozenset(),
-            radial_opener=self._active_opener(),
+            left_layer=self._left_layer,
+            right_layer=self._right_layer,
+            left_radial_index=self._radial_index.get("left", -1),
+            left_radial_glyph=self._radial_selection.get("left", ""),
+            right_radial_index=self._radial_index.get("right", -1),
+            right_radial_glyph=self._radial_selection.get("right", ""),
+            radial_opener=self._active_side(),
             radial_index=self._active_index(),
             radial_glyph=self._active_glyph(),
             shift_held=self._shift_held,
@@ -376,8 +393,7 @@ class Engine:
             self._release(name)
 
         if not self._enabled:
-            self._radial_held.clear()
-            self._radial_selection.clear()
+            self._clear_radial_state()
             return
 
         if keyboard:
@@ -485,80 +501,83 @@ class Engine:
         newly_pressed: frozenset[str],
         newly_released: frozenset[str],
     ) -> None:
-        thr = float(cfg.trigger_threshold)
-        open_now = {
-            "LT": state.lt >= thr or "LT" in state.buttons,
-            "RT": state.rt >= thr or "RT" in state.buttons,
-            "LB": "LB" in state.buttons,
-            "RB": "RB" in state.buttons,
-        }
-
-        # Face buttons + d-pad / stick clicks for direct keys & modifiers.
-        self._shift_held = "LS" in state.buttons
-        self._ctrl_held = "RS" in state.buttons or "DPAD_DOWN" in state.buttons
+        del cfg, newly_released  # stick release is magnitude-based, not button edges
+        self._shift_held = False
+        self._ctrl_held = "DPAD_DOWN" in state.buttons
 
         for name in newly_pressed:
-            if name == "DPAD_UP":
+            if name == "LB":
+                self._emit_char("a")
+            elif name == "LT":
+                self._emit_char("e")
+            elif name == "RB":
+                self._emit_char("i")
+            elif name == "RT":
+                self._emit_char("o")
+            elif name == "A":
                 self._emit_key("space")
+            elif name == "B":
+                self._emit_key("backspace")
+            elif name == "DPAD_UP":
+                self._emit_char(".")
+            elif name == "DPAD_LEFT":
+                self._emit_char(",")
             elif name == "DPAD_RIGHT":
                 self._emit_key("enter")
-            elif name == "DPAD_LEFT":
-                self._emit_key("backspace")
-            elif name == "Y":
-                self._emit_char("j")
-            elif name == "X":
-                self._emit_char("q")
-            elif name == "B":
-                self._emit_char(".")
-            elif name == "A":
-                self._emit_char(",")
+            elif name == "LS":
+                self._left_layer = 1 - self._left_layer
+                self._clear_side("left")
+                self.rumble()
+            elif name == "RS":
+                self._right_layer = 1 - self._right_layer
+                self._clear_side("right")
+                self.rumble()
 
-        for opener in OPENERS:
-            held = open_now[opener]
-            if held:
-                self._radial_held.add(opener)
-                sel = select_radial(
-                    opener, state.lx, state.ly, state.rx, state.ry,
-                    number_mode=self._number_mode,
-                )
-                if sel is not None:
-                    self._radial_selection[opener] = sel.glyph
-                elif opener not in self._radial_selection:
-                    self._radial_selection.pop(opener, None)
-                # Keep last aimed glyph while stick returns to center (still holding opener).
-            elif opener in self._radial_held:
-                self._radial_held.discard(opener)
-                glyph = self._radial_selection.pop(opener, "")
-                if glyph:
-                    self._emit_char(glyph)
+        # Dual always-on wheels: aim at ≥95%, type the aimed glyph on release.
+        self._tick_side("left", state.lx, state.ly, self._left_layer)
+        self._tick_side("right", state.rx, state.ry, self._right_layer)
 
-        # Drop selections for openers no longer held.
-        for opener in list(self._radial_selection):
-            if opener not in self._radial_held:
-                self._radial_selection.pop(opener, None)
+    def _tick_side(self, side: str, x: float, y: float, layer: int) -> None:
+        mag = math.hypot(x, y)
+        sel = select_side(
+            side, x, y, layer=layer, number_mode=self._number_mode,
+        )
+        if sel is not None:
+            self._radial_selection[side] = sel.glyph
+            self._radial_index[side] = sel.index
+            self._radial_armed[side] = True
+            return
+        if mag < RELEASE_THRESHOLD and self._radial_armed.get(side):
+            glyph = self._radial_selection.pop(side, "")
+            self._radial_index.pop(side, None)
+            self._radial_armed[side] = False
+            if glyph:
+                self._emit_char(glyph)
 
-    def _active_opener(self) -> str:
-        # Prefer the most recently held / left-side first for HUD focus.
-        for opener in ("LT", "LB", "RB", "RT"):
-            if opener in self._radial_held:
-                return opener
+    def _clear_side(self, side: str) -> None:
+        self._radial_selection.pop(side, None)
+        self._radial_index.pop(side, None)
+        self._radial_armed[side] = False
+
+    def _clear_radial_state(self) -> None:
+        self._radial_selection.clear()
+        self._radial_index.clear()
+        self._radial_armed = {"left": False, "right": False}
+
+    def _active_side(self) -> str:
+        """Prefer the side that currently has an aimed glyph (left first)."""
+        for side in SIDES:
+            if self._radial_armed.get(side) and side in self._radial_selection:
+                return side
         return ""
 
     def _active_glyph(self) -> str:
-        opener = self._active_opener()
-        return self._radial_selection.get(opener, "") if opener else ""
+        side = self._active_side()
+        return self._radial_selection.get(side, "") if side else ""
 
     def _active_index(self) -> int:
-        opener = self._active_opener()
-        glyph = self._radial_selection.get(opener, "")
-        if not opener or not glyph:
-            return -1
-        from .radial import items_for
-        items = items_for(opener, number_mode=self._number_mode)
-        try:
-            return items.index(glyph)
-        except ValueError:
-            return -1
+        side = self._active_side()
+        return self._radial_index.get(side, -1) if side else -1
 
     def _emit_char(self, glyph: str) -> None:
         ch = glyph
@@ -596,8 +615,7 @@ class Engine:
         for name in list(self._held):
             self._release(name)
         self._held.clear()
-        self._radial_held.clear()
-        self._radial_selection.clear()
+        self._clear_radial_state()
         self._shift_held = False
         self._ctrl_held = False
         self._player.stop()

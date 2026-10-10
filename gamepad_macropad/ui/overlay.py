@@ -186,7 +186,7 @@ class Overlay:
         else:
             color, title = theme.OK, status.device_name
             if status.input_mode == "keyboard":
-                info = "Keyboard radial"
+                info = "Keyboard · aim 95% · release to type"
                 if status.number_mode:
                     info += " \u00b7 NUM"
                 info += " \u00b7 Back = mouse"
@@ -202,8 +202,11 @@ class Overlay:
         if not self._compact:
             self.title.configure(text=title[:34] if title else "Gamepad Macropad")
             self.info.configure(text=info)
-            if status.input_mode == "keyboard" and status.radial_glyph:
-                self.pressed.configure(text=status.radial_glyph)
+            if status.input_mode == "keyboard":
+                aimed = " ".join(
+                    g for g in (status.left_radial_glyph, status.right_radial_glyph) if g
+                )
+                self.pressed.configure(text=aimed)
             else:
                 self.pressed.configure(text=" ".join(sorted(status.pressed))[:28])
         if status.input_mode == "keyboard":

@@ -27,9 +27,12 @@ Inspired by [JoyType](inspiration/JoyType-main) (Joy-Con / IINE -> desktop input
 | D-pad | Arrow keys (auto-repeat) | Back / View | Switch mouse / keyboard mode |
 | Start / Menu | Open settings | Guide | nothing |
 
-**Keyboard mode** (radial dials): Back / View toggles mouse ↔ keyboard. Hold LT / RT /
-LB / RB and aim with that side’s stick; release to type the highlighted character.
-Pause / Guide toggles number mode (1–5 on LT, 6–0 on RT). See **Settings → Keyboard**.
+**Keyboard mode** (dual always-on radials): Back / View toggles mouse ↔ keyboard.
+Both sticks drive a 6-letter wheel at all times — push past **95%** deflection to
+aim a sector, then release toward center to type it. Stick clicks swap each side’s
+letter layer. Vowels are on the shoulders/triggers (LB=A, LT=E, RB=I, RT=O);
+A=space, B=backspace, D-pad ↑=`.`, ←=`,`. Guide / Pause toggles number mode.
+See **Settings → Keyboard**.
 
 Change any of these in **Settings -> Buttons**.
 
