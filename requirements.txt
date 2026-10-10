@@ -1,0 +1,10 @@
+# Gamepad Macropad - runtime dependencies (Windows, Python 3.10+)
+
+# SDL2 GameController API: normalizes Xbox / PlayStation / Switch / generic pads.
+pygame-ce>=2.5,<3
+
+# Build only (python -m PyInstaller gamepad_macropad.spec)
+pyinstaller>=6.0
+
+# Tests
+pytest>=8
