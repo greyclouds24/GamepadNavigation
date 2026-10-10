@@ -1,16 +1,2 @@
-# Virtualenv / Python
-.venv/
-__pycache__/
-*.pyc
-.pytest_cache/
-
-# Build artifacts
-build/
-dist/
-*.spec.bak
-
-# Local app config (user-specific)
-config.json
-
 # Reference / third-party material (not part of this app)
 inspiration/
