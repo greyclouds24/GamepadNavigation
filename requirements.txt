@@ -3,6 +3,10 @@
 # SDL2 GameController API: normalizes Xbox / PlayStation / Switch / generic pads.
 pygame-ce>=2.5,<3
 
+# Hold-to-talk dictation (offline). The English model is downloaded on first use.
+vosk>=0.3.45
+PyAudio>=0.2.14
+
 # Build only (python -m PyInstaller gamepad_macropad.spec)
 pyinstaller>=6.0
 

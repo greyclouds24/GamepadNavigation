@@ -61,9 +61,11 @@ SPECIALS = (
 )
 SPECIAL_LABELS = {
     "toggle_enabled": "Pause / resume conversion",
-    "toggle_input_mode": "Cycle mouse / keyboard / game",
+    "toggle_input_mode": "Switch mouse / keyboard",
     "toggle_number_mode": "Toggle number mode (keyboard)",
     "toggle_right_stick_mode": "Switch right stick scroll / arrows",
+    "toggle_left_layer": "Switch left wheel layer",
+    "toggle_right_layer": "Switch right wheel layer",
     "open_settings": "Open settings window",
     "stop_macros": "Stop any playing macro",
     "toggle_overlay": "Collapse / expand overlay",
@@ -240,6 +242,43 @@ class KeyboardSettings:
         self.right = list(right)
         self.right_alt = list(right_alt)
 
+    bindings: dict[str, Binding] = field(default_factory=lambda: _default_keyboard_bindings())
+
+    def binding(self, name: str) -> Binding:
+        return self.bindings.get(name) or Binding()
+
+
+def _default_keyboard_bindings() -> dict[str, Binding]:
+    """What each button does in keyboard mode. Empty means 'use the mouse-mode special, if any'."""
+    return {
+        "A": Binding.for_key("space"),
+        "B": Binding.for_key("backspace"),
+        "X": Binding(),
+        "Y": Binding(),
+        "LB": Binding.for_key("a"),
+        "RB": Binding.for_key("i"),
+        "LT": Binding.for_key("e"),
+        "RT": Binding.for_key("o"),
+        "LS": Binding.for_special("toggle_left_layer"),
+        "RS": Binding.for_special("toggle_right_layer"),
+        "BACK": Binding(),
+        "START": Binding(),
+        "GUIDE": Binding(),
+        "DPAD_UP": Binding.for_key("period"),
+        "DPAD_DOWN": Binding.for_key("ctrl"),
+        "DPAD_LEFT": Binding.for_key("comma"),
+        "DPAD_RIGHT": Binding.for_key("enter"),
+    }
+
+
+def _keyboard_bindings_from_dict(data: Any) -> dict[str, Binding]:
+    out = _default_keyboard_bindings()
+    if isinstance(data, dict):
+        for name in BUTTONS:
+            if name in data and isinstance(data[name], dict):
+                out[name] = Binding.from_dict(data[name])
+    return out
+
 
 def _default_bindings() -> dict[str, Binding]:
     return {
@@ -315,6 +354,8 @@ def _load_keyboard(kb: KeyboardSettings, section: Any) -> None:
     issues = validate_wheel_layout(kb.left, kb.left_alt, kb.right, kb.right_alt)
     if not issues.ok:
         kb.reset_wheels()
+    if "bindings" in section:
+        kb.bindings = _keyboard_bindings_from_dict(section.get("bindings"))
 
 
 @dataclass

@@ -9,7 +9,15 @@ from tkinter import ttk
 from typing import TYPE_CHECKING
 
 from .. import __version__
-from ..config import BUTTON_LABELS, BUTTONS, Binding, Config, Macro, config_path, log_path
+from ..config import (
+    BUTTON_LABELS,
+    BUTTONS,
+    Binding,
+    Config,
+    Macro,
+    config_path,
+    log_path,
+)
 from ..engine import EngineStatus, shape_axis, shape_radial
 from ..macros import summarize
 from ..radial import (
@@ -310,10 +318,10 @@ class SettingsWindow(tk.Toplevel):
         ttk.Label(t, text="Keyboard mode (dual radials)", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             t,
-            text="Back / View cycles mouse → keyboard → game. Both stick wheels are always live: "
-                 "push a stick past 95% to aim a letter, then release toward center to type it. "
-                 "Guide / Pause toggles number mode. Edit letter wheels below — every consonant "
-                 "plus ? and ! must appear exactly once before you can save.",
+            text="Back switches mouse ↔ keyboard. Hold Back and Menu together for 2 seconds to "
+                 "enter or leave game mode. Both stick wheels are always live: push a stick past "
+                 "95% to aim a letter, then release toward center to type it. Buttons below can "
+                 "be any keyboard key or a macro.",
             style="Dim.TLabel", wraplength=theme.px(700), justify="left",
         ).pack(anchor="w", pady=(0, 8))
 
@@ -370,16 +378,37 @@ class SettingsWindow(tk.Toplevel):
             style="Dim.TLabel",
         ).pack(anchor="w")
 
-        extras = ttk.LabelFrame(t, text="Also in keyboard mode", padding=10)
-        extras.pack(fill="x", pady=(0, 0))
+        actions = ttk.LabelFrame(t, text="Button actions in keyboard mode", padding=10)
+        actions.pack(fill="both", expand=True, pady=(0, 0))
         ttk.Label(
-            extras,
-            text="Vowels: LB → A · LT → E · RB → I · RT → O\n"
-                 "A → space · B → backspace · D-pad ↑ . · ← , · → enter · ↓ ctrl\n"
-                 "LS click swaps left wheel layer · RS click swaps right wheel layer",
-            style="Dim.TLabel", justify="left",
-        ).pack(anchor="w")
+            actions,
+            text="Double-click a button to assign a keyboard key or a macro. "
+                 "Leave Back, Menu, and Guide empty to keep mode switch, dictation, and number mode. "
+                 "Hold Menu to dictate.",
+            style="Dim.TLabel", wraplength=theme.px(680), justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+        frame = ttk.Frame(actions)
+        frame.pack(fill="both", expand=True)
+        self.kb_tree = ttk.Treeview(frame, columns=("button", "action"), show="headings", selectmode="browse", height=8)
+        self.kb_tree.heading("button", text="Controller button")
+        self.kb_tree.heading("action", text="Keyboard-mode action")
+        self.kb_tree.column("button", width=200, anchor="w")
+        self.kb_tree.column("action", width=420, anchor="w")
+        sb = ttk.Scrollbar(frame, orient="vertical", command=self.kb_tree.yview)
+        self.kb_tree.configure(yscrollcommand=sb.set)
+        self.kb_tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.kb_tree.bind("<Double-1>", lambda e: self._edit_keyboard_binding())
+        self.kb_tree.bind("<Return>", lambda e: self._edit_keyboard_binding())
+        for name in BUTTONS:
+            self.kb_tree.insert("", "end", iid=f"kb-{name}", values=(BUTTON_LABELS.get(name, name), ""))
+        row = ttk.Frame(actions)
+        row.pack(fill="x", pady=(8, 0))
+        ttk.Button(row, text="Edit...", style="Accent.TButton", command=self._edit_keyboard_binding).pack(side="left")
+        ttk.Button(row, text="Clear", command=self._clear_keyboard_binding).pack(side="left", padx=(6, 0))
+        ttk.Button(row, text="Reset keyboard actions", command=self._reset_keyboard_bindings).pack(side="right")
         self._load_wheel_entries()
+        self._refresh_keyboard_bindings()
 
     def _read_wheel_draft(self) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
@@ -456,6 +485,66 @@ class SettingsWindow(tk.Toplevel):
     def _keyboard_opts_changed(self) -> None:
         self.cfg.keyboard.show_hud = bool(self.v_hud.get())
         self.app.config_changed()
+        self.app.sync_radial_hud()
+
+    def _keyboard_action_label(self, name: str) -> str:
+        binding = self.cfg.keyboard.binding(name)
+        if binding.type != "none":
+            return binding.describe()
+        if name == "START":
+            return "—   hold = mic, tap = settings"
+        fallback = self.cfg.binding(name)
+        if fallback.type == "special":
+            return f"—   {fallback.describe()}"
+        return "—"
+
+    def _refresh_keyboard_bindings(self) -> None:
+        for name in BUTTONS:
+            self.kb_tree.item(
+                f"kb-{name}",
+                values=(BUTTON_LABELS.get(name, name), self._keyboard_action_label(name)),
+            )
+
+    def _selected_keyboard_button(self) -> str | None:
+        sel = self.kb_tree.selection()
+        if not sel:
+            return None
+        return sel[0].removeprefix("kb-")
+
+    def _edit_keyboard_binding(self) -> None:
+        name = self._selected_keyboard_button()
+        if name is None:
+            return
+
+        def saved(binding: Binding) -> None:
+            if binding.type not in ("none", "key", "macro", "special"):
+                return
+            self.cfg.keyboard.bindings[name] = binding
+            self.app.config_changed()
+            self._refresh_keyboard_bindings()
+            self.app.sync_radial_hud()
+
+        BindingDialog(
+            self, self.app, name, self.cfg.keyboard.binding(name), saved,
+            kinds=("key", "macro", "special", "none"),
+            specials=("toggle_left_layer", "toggle_right_layer"),
+        ).show()
+
+    def _clear_keyboard_binding(self) -> None:
+        name = self._selected_keyboard_button()
+        if name is None:
+            return
+        self.cfg.keyboard.bindings[name] = Binding()
+        self.app.config_changed()
+        self._refresh_keyboard_bindings()
+        self.app.sync_radial_hud()
+
+    def _reset_keyboard_bindings(self) -> None:
+        if not confirm(self, "Reset keyboard actions", "Replace every keyboard-mode button action with the defaults?"):
+            return
+        self.cfg.keyboard.bindings = Config.defaults().keyboard.bindings
+        self.app.config_changed()
+        self._refresh_keyboard_bindings()
         self.app.sync_radial_hud()
 
     # ======================================================================
@@ -659,6 +748,7 @@ class SettingsWindow(tk.Toplevel):
         self._load_general_vars()
         self._refresh_bindings()
         self._load_wheel_entries()
+        self._refresh_keyboard_bindings()
         self._refresh_macros()
         self._refresh_devices()
         self.v_hud.set(self.cfg.keyboard.show_hud)

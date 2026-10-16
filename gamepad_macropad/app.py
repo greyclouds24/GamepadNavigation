@@ -153,6 +153,10 @@ class App:
             mode = str(data.get("mode", "wheel"))
             label = "Right stick: arrows" if mode == "arrows" else "Right stick: scroll"
             self.overlay.flash(label, 1.2)
+        elif kind == "mic":
+            message = str(data.get("message", "")).strip()
+            if message:
+                self.overlay.flash(message, 1.6)
 
     # -- engine-thread callback ---------------------------------------------------------
 

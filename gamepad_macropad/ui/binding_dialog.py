@@ -26,12 +26,16 @@ if TYPE_CHECKING:  # pragma: no cover
 
 class BindingDialog(Dialog):
     def __init__(self, parent: tk.Misc, app: "App", button_name: str, binding: Binding,
-                 on_save: Callable[[Binding], None]) -> None:
+                 on_save: Callable[[Binding], None], *,
+                 kinds: tuple[str, ...] | None = None,
+                 specials: tuple[str, ...] | None = None) -> None:
         super().__init__(parent, f"Bind {BUTTON_LABELS.get(button_name, button_name)}", width=520, modal=False)
         self.app = app
         self.button_name = button_name
         self.on_save = on_save
         self._capture = None
+        self._kinds = kinds or ACTION_TYPES
+        self._specials = specials or SPECIALS
 
         self.type_var = tk.StringVar(value=binding.type)
         self.keys_var = tk.StringVar(value="+".join(binding.keys))
@@ -53,8 +57,11 @@ class BindingDialog(Dialog):
 
         types = ttk.Frame(b)
         types.pack(fill="x")
-        for t in ACTION_TYPES:
-            ttk.Radiobutton(types, text=ACTION_TYPE_LABELS[t], value=t, variable=self.type_var,
+        if self.type_var.get() not in self._kinds:
+            self.type_var.set("none" if "none" in self._kinds else self._kinds[0])
+        for t in self._kinds:
+            label = "Wheel layer" if t == "special" and self._specials != SPECIALS else ACTION_TYPE_LABELS[t]
+            ttk.Radiobutton(types, text=label, value=t, variable=self.type_var,
                             command=self._show_section).pack(anchor="w", pady=1)
 
         ttk.Separator(b).pack(fill="x", pady=10)
@@ -123,11 +130,12 @@ class BindingDialog(Dialog):
         row = ttk.Frame(f)
         row.pack(fill="x")
         ttk.Label(row, text="Function").pack(side="left")
-        self.special_combo = ttk.Combobox(row, values=[SPECIAL_LABELS[s] for s in SPECIALS], state="readonly",
-                                          width=36)
+        self.special_combo = ttk.Combobox(
+            row, values=[SPECIAL_LABELS.get(s, s) for s in self._specials], state="readonly", width=36,
+        )
         self.special_combo.pack(side="left", padx=(8, 0))
         current = self.special_var.get()
-        self.special_combo.current(SPECIALS.index(current) if current in SPECIALS else 0)
+        self.special_combo.current(self._specials.index(current) if current in self._specials else 0)
 
         # none
         f = self._section("none")
@@ -244,7 +252,7 @@ class BindingDialog(Dialog):
                 self.error.configure(text="Pick or record a macro.")
                 return
         elif t == "special":
-            binding.special = SPECIALS[self.special_combo.current()]
+            binding.special = self._specials[self.special_combo.current()]
         self.on_save(binding)
         self.close()
 

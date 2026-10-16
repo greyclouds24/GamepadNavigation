@@ -70,7 +70,7 @@ class Overlay:
         self.menu = tk.Menu(self.root, tearoff=0, bg=theme.BG_RAISED, fg=theme.FG,
                             activebackground=theme.ACCENT_DARK, activeforeground="#fff", bd=0)
         self.menu.add_command(label="Settings...", command=self.app.open_settings)
-        self.menu.add_command(label="Cycle mouse / keyboard / game", command=self.app.toggle_input_mode)
+        self.menu.add_command(label="Switch mouse / keyboard", command=self.app.toggle_input_mode)
         self.menu.add_command(label="Number mode (keyboard)", command=self.app.toggle_number_mode)
         self.menu.add_command(label="Pause / resume", command=self.app.toggle_enabled)
         self.menu.add_command(label="Compact / expand", command=self.toggle_compact)
@@ -177,6 +177,8 @@ class Overlay:
             color, title, info = theme.ERR, "Error", status.error
         elif not status.connected:
             color, title, info = theme.FG_DIM, "No controller", "Connect a gamepad (USB or Bluetooth)"
+        elif status.dictating:
+            color, title, info = theme.ACCENT, status.device_name, "Mic · listening"
         elif not status.enabled:
             color, title, info = theme.WARN, status.device_name, "Paused - press \u25B6 on the overlay to resume"
         elif self.app.recording:
@@ -189,12 +191,12 @@ class Overlay:
                 info = "Keyboard · aim 95% · release to type"
                 if status.number_mode:
                     info += " \u00b7 NUM"
-                info += " \u00b7 Back = game"
+                info += " \u00b7 hold Back+Menu 2s = game"
             elif status.input_mode == "game":
-                info = "Game \u00b7 native controller \u00b7 Back = mouse"
+                info = "Game \u00b7 hold Back+Menu 2s to leave"
             else:
                 stick = "R-stick arrows" if status.right_stick_mode == "arrows" else "R-stick scroll"
-                info = f"Mouse \u00b7 L-stick cursor \u00b7 {stick}"
+                info = f"Mouse \u00b7 {stick} \u00b7 hold Menu = mic \u00b7 Back+Menu 2s = game"
             if not status.is_controller:
                 info += " \u00b7 generic mapping"
         if self._flash_text and time.monotonic() < self._flash_until:

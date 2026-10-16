@@ -24,12 +24,18 @@ Inspired by [JoyType](inspiration/JoyType-main) (Joy-Con / IINE -> desktop input
 | X | Middle mouse button | LT | Esc |
 | Y | Double click | RT | Enter |
 | LS (stick click) | Left click | RS (stick click) | Toggle right stick scroll / arrows |
-| D-pad | Arrow keys (auto-repeat) | Back / View | Cycle mouse / keyboard / game |
+| D-pad | Arrow keys (auto-repeat) | Back / View | Switch mouse / keyboard |
 | Start / Menu | Open settings | Guide | nothing |
 
-**Game mode:** Back / View cycles mouse → keyboard → game. In game mode the app
-injects nothing — no cursor, keys, wheels, or macros — so the pad is a normal
-controller. Press Back / View again (or the overlay mode button) to return to mouse.
+**Game mode:** Hold **Back + Menu** together for 2 seconds to enter game mode,
+and hold them again for 2 seconds to leave (back to whichever of mouse or keyboard
+you came from). In game mode the app injects nothing, so the pad is a normal
+controller. Back alone switches mouse ↔ keyboard.
+
+**Mic:** in mouse or keyboard mode, hold **Menu** (the small button on the right)
+to dictate through the default microphone. Speech is typed as you talk. A short
+tap of Menu still opens settings. The recognizer is [Vosk](https://alphacephei.com/vosk/)
+(offline); the first hold downloads a small English model.
 
 **Keyboard mode** (dual always-on radials): Back / View advances to game mode.
 Both sticks drive a 6-letter wheel at all times — push past **95%** deflection to

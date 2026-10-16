@@ -76,6 +76,9 @@ def test_defaults_cover_every_button():
     assert cfg.binding("DPAD_UP").repeat is True
     assert cfg.binding("GUIDE").special == "toggle_number_mode"
     assert cfg.binding("RS").special == "toggle_right_stick_mode"
+    assert cfg.keyboard.binding("LB").keys == ["a"]
+    assert cfg.keyboard.binding("LS").special == "toggle_left_layer"
+    assert cfg.keyboard.binding("A").keys == ["space"]
 
 
 def test_input_mode_cycles_mouse_keyboard_game():

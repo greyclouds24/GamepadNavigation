@@ -23,7 +23,8 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from . import keys, win_input
-from .config import INPUT_MODES, Binding, Config, RIGHT_STICK_MODES, next_input_mode
+from .config import INPUT_MODES, Binding, Config, RIGHT_STICK_MODES
+from .dictation import MicDictation
 from .gamepad import GamepadReader, PadState
 from .macros import MacroPlayer
 from .radial import RELEASE_THRESHOLD, SIDES, select_side
@@ -33,6 +34,9 @@ log = logging.getLogger(__name__)
 UiEvent = Callable[[str, dict], None]
 WHEEL_DELTA = 120
 _SMOOTH_SCROLL_INTERVAL = 1.0 / 60.0
+_GAME_EXIT_HOLD_S = 2.0
+_MIC_ARM_S = 0.40
+_LAYER_SPECIALS = ("toggle_left_layer", "toggle_right_layer")
 # Post-deadzone stick fractions for the three-band response curve:
 #   [0, _PRECISION_END)  precision band (scaled by precision_scale + response curve)
 #   [_PRECISION_END, _FULL_SPEED_AT)  ramp from precision ceiling up to full speed
@@ -53,6 +57,7 @@ class EngineStatus:
     input_mode: str = "mouse"  # mouse | keyboard | game
     number_mode: bool = False
     right_stick_mode: str = "wheel"  # wheel | arrows (mouse mode)
+    dictating: bool = False
     playing_macro: str | None = None
     pressed: frozenset[str] = frozenset()
     left_layer: int = 0
@@ -118,6 +123,12 @@ def shape_radial(
     return x / mag * shaped, y / mag * shaped, shaped
 
 
+def _is_keyboard_action(binding: Binding) -> bool:
+    if binding.type in ("key", "macro"):
+        return True
+    return binding.type == "special" and binding.special in _LAYER_SPECIALS
+
+
 def shape_axis(
     v: float, deadzone: float, accel: float, *, precision_scale: float = 1.0,
 ) -> float:
@@ -173,6 +184,14 @@ class Engine:
         self._ctrl_held = False
         self._arrow_held: str | None = None
         self._arrow_next_repeat = 0.0
+        self._mic = MicDictation()
+        self._mic_armed = False
+        self._pause_since: float | None = None
+        self._game_exit_since: float | None = None
+        self._ignore_start_until_release = False
+        self._chord_held = False
+        self._chord_latched = False
+        self._mode_before_game = "mouse"
 
     # -- public API (any thread) ---------------------------------------------
 
@@ -203,7 +222,10 @@ class Engine:
         mode = mode if mode in INPUT_MODES else "mouse"
         if mode == self._cfg.input_mode:
             return
+        if mode == "game" and self.input_mode in ("mouse", "keyboard"):
+            self._mode_before_game = self.input_mode
         self._request_release_all()
+        self._stop_mic()
         self._cfg.input_mode = mode
         self._number_mode = False
         self._right_stick_mode = "wheel"
@@ -214,7 +236,12 @@ class Engine:
         self._ui_event("input_mode", {"mode": mode})
 
     def toggle_input_mode(self) -> None:
-        self.set_input_mode(next_input_mode(self.input_mode))
+        """Back, and the overlay button: mouse ↔ keyboard. Game mode is the Back+Menu hold."""
+        if self.input_mode == "game":
+            restore = self._mode_before_game if self._mode_before_game in ("mouse", "keyboard") else "mouse"
+            self.set_input_mode(restore)
+        else:
+            self.set_input_mode("keyboard" if self.input_mode == "mouse" else "mouse")
 
     def toggle_number_mode(self) -> None:
         if self.input_mode != "keyboard":
@@ -304,6 +331,7 @@ class Engine:
             return
         win_input.begin_high_res_timer(1)
         win_input.release_all_modifiers()
+        self._mic.preload()
         last = time.perf_counter()
         next_tick = last
         last_devices = 0.0
@@ -333,6 +361,9 @@ class Engine:
                     if self._prev_buttons or self._held:
                         self._release_everything()
                         self._prev_buttons = frozenset()
+                    self._stop_mic()
+                    self._game_exit_since = None
+                    self._pause_since = None
                     self._publish(state=None)
                 else:
                     self._tick(cfg, state, now, dt)
@@ -356,6 +387,7 @@ class Engine:
             try:
                 self._release_everything()
             finally:
+                self._mic.shutdown()
                 win_input.end_high_res_timer(1)
                 self._reader.close()
                 self._publish(state=None, error=error, stopped=True)
@@ -372,6 +404,7 @@ class Engine:
             input_mode=self.input_mode,
             number_mode=self._number_mode,
             right_stick_mode=self.right_stick_mode,
+            dictating=self._mic_armed,
             playing_macro=self._player.playing,
             pressed=state.buttons if state else frozenset(),
             left_layer=self._left_layer,
@@ -404,9 +437,17 @@ class Engine:
         mode = self.input_mode
         keyboard = mode == "keyboard"
         game = mode == "game"
+        self._drain_mic()
+        self._tick_chords(cfg, state, now)
+        mode = self.input_mode
+        keyboard = mode == "keyboard"
+        game = mode == "game"
 
         interceptor = self._interceptor
         for name in sorted(newly_pressed):
+            # Menu/Start is hold-to-dictate (short tap still runs its binding).
+            if name == "START" and not game:
+                continue
             if interceptor is not None and not game:
                 try:
                     if interceptor(name):
@@ -415,9 +456,7 @@ class Engine:
                     log.exception("button interceptor failed")
             binding = cfg.binding(name)
             if game:
-                # Passthrough: only the mode cycle is handled here.
-                if binding.type == "special" and binding.special == "toggle_input_mode":
-                    self._special(binding.special, pressed=True)
+                # Passthrough. Leaving game mode is the Back+Menu hold, not a tap.
                 continue
             if not self._enabled:
                 if binding.type == "special" and binding.special in (
@@ -427,6 +466,10 @@ class Engine:
                     self._special(binding.special, pressed=True)
                 continue
             if keyboard:
+                kb_binding = cfg.keyboard.binding(name)
+                if _is_keyboard_action(kb_binding):
+                    self._press(name, kb_binding, now)
+                    continue
                 if binding.type == "special":
                     self._press(name, binding, now)
                 continue
@@ -442,7 +485,7 @@ class Engine:
 
         if keyboard:
             self._release_stick_arrow()
-            self._keyboard_tick(cfg, state, newly_pressed, newly_released)
+            self._keyboard_tick(cfg, state, newly_pressed, newly_released, now)
             return
 
         self._repeat(cfg, now)
@@ -539,6 +582,16 @@ class Engine:
             self.toggle_number_mode()
         elif which == "toggle_right_stick_mode":
             self.toggle_right_stick_mode()
+        elif which == "toggle_left_layer":
+            if self.input_mode == "keyboard":
+                self._left_layer = 1 - self._left_layer
+                self._clear_side("left")
+                self.rumble()
+        elif which == "toggle_right_layer":
+            if self.input_mode == "keyboard":
+                self._right_layer = 1 - self._right_layer
+                self._clear_side("right")
+                self.rumble()
         elif which == "open_settings":
             self._ui_event("open_settings", {})
         elif which == "toggle_overlay":
@@ -552,38 +605,11 @@ class Engine:
         state: PadState,
         newly_pressed: frozenset[str],
         newly_released: frozenset[str],
+        now: float,
     ) -> None:
-        del cfg, newly_released  # stick release is magnitude-based, not button edges
-        self._shift_held = False
-        self._ctrl_held = "DPAD_DOWN" in state.buttons
-
-        for name in newly_pressed:
-            if name == "LB":
-                self._emit_char("a")
-            elif name == "LT":
-                self._emit_char("e")
-            elif name == "RB":
-                self._emit_char("i")
-            elif name == "RT":
-                self._emit_char("o")
-            elif name == "A":
-                self._emit_key("space")
-            elif name == "B":
-                self._emit_key("backspace")
-            elif name == "DPAD_UP":
-                self._emit_char(".")
-            elif name == "DPAD_LEFT":
-                self._emit_char(",")
-            elif name == "DPAD_RIGHT":
-                self._emit_key("enter")
-            elif name == "LS":
-                self._left_layer = 1 - self._left_layer
-                self._clear_side("left")
-                self.rumble()
-            elif name == "RS":
-                self._right_layer = 1 - self._right_layer
-                self._clear_side("right")
-                self.rumble()
+        del newly_pressed, newly_released  # stick release is magnitude-based, not button edges
+        self._sync_modifiers()
+        self._repeat(cfg, now)
 
         # Dual always-on wheels: aim at ≥95%, type the aimed glyph on release.
         self._tick_side("left", state.lx, state.ly, self._left_layer)
@@ -638,8 +664,8 @@ class Engine:
             ch = ch.upper() if self._shift_held else ch.lower()
         if self._ctrl_held and len(ch) == 1 and ch.isalpha():
             try:
-                vk = keys.resolve_vk(ch.lower())
-                win_input.tap_chord([keys.VK["ctrl"], vk])
+                # Ctrl is already held by the controller binding, so the letter alone completes the chord.
+                win_input.tap_key(keys.resolve_vk(ch.lower()))
             except (KeyError, OSError):
                 log.exception("ctrl+%s failed", ch)
             return
@@ -673,11 +699,118 @@ class Engine:
         self._shift_held = False
         self._ctrl_held = False
         self._player.stop()
+        self._stop_mic()
         self._acc_x = self._acc_y = self._acc_v = self._acc_h = 0.0
         win_input.release_all_modifiers()
 
     def _on_macro_state(self, name: str | None) -> None:
         self._ui_event("macro", {"name": name})
+
+    def _tick_chords(self, cfg: Config, state: PadState, now: float) -> None:
+        """Back+Menu held 2s toggles game mode. Menu hold dictates in mouse/keyboard."""
+        back = "BACK" in state.buttons
+        start = "START" in state.buttons
+        if self._chord_latched:
+            if not (back and start):
+                self._chord_latched = False
+                self._game_exit_since = None
+            else:
+                return
+        if back and start:
+            self._chord_held = True
+            self._pause_since = None
+            self._stop_mic()
+            if self._game_exit_since is None:
+                self._game_exit_since = now
+            elif now - self._game_exit_since >= _GAME_EXIT_HOLD_S:
+                self._game_exit_since = None
+                self._chord_latched = True
+                self._ignore_start_until_release = True
+                if self.input_mode == "game":
+                    restore = self._mode_before_game if self._mode_before_game in ("mouse", "keyboard") else "mouse"
+                    self.set_input_mode(restore)
+                else:
+                    self.set_input_mode("game")
+                self.rumble()
+            return
+        if self._chord_held:
+            self._chord_held = False
+            self._game_exit_since = None
+            self._pause_since = None
+            if start:
+                self._ignore_start_until_release = True
+            return
+        self._game_exit_since = None
+        if self.input_mode == "game":
+            self._stop_mic()
+            self._pause_since = None
+            return
+        if self._ignore_start_until_release:
+            self._pause_since = None
+            if not start:
+                self._ignore_start_until_release = False
+            return
+        if start:
+            if self._pause_since is None:
+                self._pause_since = now
+            elif not self._mic_armed and now - self._pause_since >= _MIC_ARM_S:
+                self._mic_armed = True
+                self._mic.set_listening(True)
+            return
+        if self._pause_since is not None and not self._mic_armed:
+            self._fire_start_tap(cfg, now)
+        self._pause_since = None
+        if self._mic_armed:
+            self._stop_mic()
+
+    def _sync_modifiers(self) -> None:
+        shift = False
+        ctrl = False
+        for held in self._held.values():
+            if held.binding.type != "key":
+                continue
+            tokens = {token.lower() for token in held.binding.keys}
+            if tokens & {"shift", "lshift", "rshift"}:
+                shift = True
+            if tokens & {"ctrl", "control", "lctrl", "rctrl"}:
+                ctrl = True
+        self._shift_held = shift
+        self._ctrl_held = ctrl
+
+    def _fire_start_tap(self, cfg: Config, now: float) -> None:
+        """A short Menu press runs the keyboard binding, or the mouse-mode binding."""
+        if self.input_mode == "keyboard":
+            kb_binding = cfg.keyboard.binding("START")
+            if _is_keyboard_action(kb_binding):
+                self._press("START", kb_binding, now)
+                self._release("START")
+                return
+        binding = cfg.binding("START")
+        if not self._enabled:
+            if binding.type == "special" and binding.special in (
+                "toggle_enabled", "toggle_input_mode", "toggle_number_mode",
+                "toggle_right_stick_mode",
+            ):
+                self._special(binding.special, pressed=True)
+            return
+        if self.input_mode == "keyboard" and binding.type != "special":
+            return
+        self._press("START", binding, now)
+        self._release("START")
+
+    def _stop_mic(self) -> None:
+        if not self._mic_armed and not self._mic.listening:
+            self._mic_armed = False
+            return
+        self._mic_armed = False
+        self._mic.set_listening(False)
+
+    def _drain_mic(self) -> None:
+        for note in self._mic.drain_notes():
+            self._ui_event("mic", {"message": note})
+        for phrase in self._mic.drain_text():
+            spoken = phrase[:1].upper() + phrase[1:]
+            self._type_text(spoken + " ")
 
     # -- sticks -----------------------------------------------------------------------
 
