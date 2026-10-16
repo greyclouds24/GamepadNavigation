@@ -79,6 +79,8 @@ class RadialHud:
         self.set_visible(show)
         if not show:
             return
+        kb = self.app.config.keyboard
+        layout = (tuple(kb.left), tuple(kb.left_alt), tuple(kb.right), tuple(kb.right_alt))
         key = (
             status.number_mode,
             status.left_layer,
@@ -88,6 +90,7 @@ class RadialHud:
             status.right_radial_index,
             status.right_radial_glyph,
             status.ctrl_held,
+            layout,
             round(status.lx, 2), round(status.ly, 2),
             round(status.rx, 2), round(status.ry, 2),
         )
@@ -99,8 +102,15 @@ class RadialHud:
     def _redraw(self, status: "EngineStatus") -> None:
         c = self.canvas
         c.delete("dial")
-        left_items = items_for("left", layer=status.left_layer, number_mode=status.number_mode)
-        right_items = items_for("right", layer=status.right_layer, number_mode=status.number_mode)
+        kb = self.app.config.keyboard
+        left_items = items_for(
+            "left", layer=status.left_layer, number_mode=status.number_mode,
+            layers=kb.layers_for("left"),
+        )
+        right_items = items_for(
+            "right", layer=status.right_layer, number_mode=status.number_mode,
+            layers=kb.layers_for("right"),
+        )
         left_label = "Left" + (" · alt" if status.left_layer else "")
         right_label = "Right" + (" · alt" if status.right_layer else "")
         r = theme.px(68)

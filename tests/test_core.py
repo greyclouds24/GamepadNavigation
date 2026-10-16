@@ -12,14 +12,25 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from gamepad_macropad import keys  # noqa: E402
-from gamepad_macropad.config import BUTTONS, Binding, Config, Macro, load_config, save_config  # noqa: E402
-from gamepad_macropad.engine import shape_axis, shape_radial  # noqa: E402
+from gamepad_macropad.config import (  # noqa: E402
+    BUTTONS,
+    Binding,
+    Config,
+    Macro,
+    load_config,
+    next_input_mode,
+    save_config,
+)
+from gamepad_macropad.engine import nearest_cardinal, shape_axis, shape_radial  # noqa: E402
 from gamepad_macropad.radial import (  # noqa: E402
     AIM_THRESHOLD,
     LEFT_LAYERS,
+    REQUIRED_WHEEL_GLYPHS,
     RIGHT_LAYERS,
+    default_layer_map,
     select_side,
     stick_angle_sector,
+    validate_wheel_layout,
 )
 
 
@@ -64,6 +75,14 @@ def test_defaults_cover_every_button():
     assert cfg.binding("A").type == "mouse"
     assert cfg.binding("DPAD_UP").repeat is True
     assert cfg.binding("GUIDE").special == "toggle_number_mode"
+    assert cfg.binding("RS").special == "toggle_right_stick_mode"
+
+
+def test_input_mode_cycles_mouse_keyboard_game():
+    assert next_input_mode("mouse") == "keyboard"
+    assert next_input_mode("keyboard") == "game"
+    assert next_input_mode("game") == "mouse"
+    assert next_input_mode("nope") == "keyboard"
 
 
 def test_config_roundtrip(tmp_path):
@@ -142,6 +161,22 @@ def test_legacy_config_migrates_into_preferred_device(tmp_path):
     assert cfg.profiles["abc123"].bindings["A"].keys == ["x"]
 
 
+def test_rs_middle_mouse_migrates_to_stick_mode_toggle(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({
+        "version": 4,
+        "bindings": {"RS": {"type": "mouse", "button": "middle"}},
+    }), encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.binding("RS").special == "toggle_right_stick_mode"
+    # Already on v5: intentional middle-mouse RS is preserved.
+    path.write_text(json.dumps({
+        "version": 5,
+        "bindings": {"RS": {"type": "mouse", "button": "middle"}},
+    }), encoding="utf-8")
+    assert load_config(path).binding("RS").button == "middle"
+
+
 def test_binding_describe():
     assert Binding().describe() == "-"
     assert Binding.for_key("ctrl", "z").describe() == "Ctrl+Z"
@@ -191,6 +226,18 @@ def test_shape_axis_sign_and_deadzone():
     assert shape_axis(-0.6, 0.2, 1.0) == -shape_axis(0.6, 0.2, 1.0)
 
 
+def test_nearest_cardinal_snaps_to_arrows():
+    assert nearest_cardinal(0.0, -1.0) == "up"
+    assert nearest_cardinal(0.0, 1.0) == "down"
+    assert nearest_cardinal(-1.0, 0.0) == "left"
+    assert nearest_cardinal(1.0, 0.0) == "right"
+    # Off-axis vectors round to the nearest of the four.
+    assert nearest_cardinal(0.9, -0.2) == "right"
+    assert nearest_cardinal(0.2, -0.9) == "up"
+    assert nearest_cardinal(-0.8, 0.3) == "left"
+    assert nearest_cardinal(0.1, 0.95) == "down"
+
+
 def test_retired_snap_special_becomes_middle_mouse():
     assert Binding.from_dict({"type": "special", "special": "snap"}).type == "mouse"
     assert Binding.from_dict({"type": "special", "special": "snap"}).button == "middle"
@@ -207,14 +254,16 @@ def test_radial_sector_selection():
 
     sel = select_side("left", 0.0, -1.0, layer=0)
     assert sel is not None and sel.glyph == "T" and sel.index == 0
-    assert LEFT_LAYERS[0] == ("T", "H", "Y", "D", "X", "?")
-    assert RIGHT_LAYERS[0] == ("S", "P", "F", "L", "K", "!")
+    assert LEFT_LAYERS[0] == ("T", "H", "N", "R", "S", "L")
+    assert RIGHT_LAYERS[0] == ("D", "C", "U", "M", "F", "V")
+    assert LEFT_LAYERS[1] == ("G", "Y", "P", "B", "W", "?")
+    assert RIGHT_LAYERS[1] == ("K", "J", "X", "Q", "Z", "!")
 
     # Alt layers via stick click.
     sel_alt = select_side("left", 0.0, -1.0, layer=1)
-    assert sel_alt is not None and sel_alt.glyph == "R"
+    assert sel_alt is not None and sel_alt.glyph == "G"
     sel_right_alt = select_side("right", 0.0, -1.0, layer=1)
-    assert sel_right_alt is not None and sel_right_alt.glyph == "N"
+    assert sel_right_alt is not None and sel_right_alt.glyph == "K"
 
     # Clockwise from up: next sector is to the right.
     # Angle near 60° (π/3) → sector 1.
@@ -226,4 +275,24 @@ def test_radial_sector_selection():
     sel_num = select_side("left", 0.0, -1.0, number_mode=True)
     assert sel_num is not None and sel_num.glyph == "1"
     sel_rt = select_side("right", 0.0, -1.0, layer=0)
-    assert sel_rt is not None and sel_rt.glyph == "S"
+    assert sel_rt is not None and sel_rt.glyph == "D"
+
+
+def test_wheel_layout_validation_requires_full_unique_set():
+    d = default_layer_map()
+    ok = validate_wheel_layout(d["left"], d["left_alt"], d["right"], d["right_alt"])
+    assert ok.ok
+    assert REQUIRED_WHEEL_GLYPHS == frozenset(
+        d["left"] + d["left_alt"] + d["right"] + d["right_alt"]
+    )
+
+    bad_left = list(d["left"])
+    bad_left[0] = "H"  # duplicates H, drops T
+    issues = validate_wheel_layout(bad_left, d["left_alt"], d["right"], d["right_alt"])
+    assert not issues.ok
+    assert "H" in issues.duplicates
+    assert "T" in issues.missing
+
+    cfg = Config.defaults()
+    assert cfg.keyboard.left == list(LEFT_LAYERS[0])
+    assert cfg.keyboard.right_alt == list(RIGHT_LAYERS[1])

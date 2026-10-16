@@ -6,7 +6,7 @@ One daemon thread owns the SDL reader and runs a fixed-rate loop
 1. polls the pad and derives button press/release edges,
 2. dispatches edges to the bound actions (keys, mouse buttons, macros, ...),
 3. integrates the left stick into cursor motion and the right stick into
-   vertical/horizontal wheel deltas,
+   vertical/horizontal wheel deltas (or arrow keys in arrows mode),
 4. handles key auto-repeat for held bindings.
 
 The UI thread only ever calls the small thread-safe API (``set_config``,
@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from . import keys, win_input
-from .config import Binding, Config
+from .config import INPUT_MODES, Binding, Config, RIGHT_STICK_MODES, next_input_mode
 from .gamepad import GamepadReader, PadState
 from .macros import MacroPlayer
 from .radial import RELEASE_THRESHOLD, SIDES, select_side
@@ -39,6 +39,7 @@ _SMOOTH_SCROLL_INTERVAL = 1.0 / 60.0
 #   [_FULL_SPEED_AT, 1]  full speed
 _PRECISION_END = 0.90
 _FULL_SPEED_AT = 0.98
+_CARDINAL_DIRS = ("up", "right", "down", "left")
 
 
 @dataclass(frozen=True)
@@ -49,8 +50,9 @@ class EngineStatus:
     device_guid: str = ""
     is_controller: bool = True
     enabled: bool = True
-    input_mode: str = "mouse"
+    input_mode: str = "mouse"  # mouse | keyboard | game
     number_mode: bool = False
+    right_stick_mode: str = "wheel"  # wheel | arrows (mouse mode)
     playing_macro: str | None = None
     pressed: frozenset[str] = frozenset()
     left_layer: int = 0
@@ -127,6 +129,14 @@ def shape_axis(
     return math.copysign(_curve_magnitude(norm, accel, precision_scale=precision_scale), v)
 
 
+def nearest_cardinal(x: float, y: float) -> str:
+    """Round stick vector to nearest of up / right / down / left (SDL y+ down)."""
+    # atan2(x, -y): 0 = up, then clockwise. ±45° boundaries between cardinals.
+    angle = math.atan2(x, -y)
+    sector = int(round(angle / (math.pi / 2.0))) % 4
+    return _CARDINAL_DIRS[sector]
+
+
 class Engine:
     def __init__(self, cfg: Config, *, ui_event: UiEvent | None = None) -> None:
         self._cfg = cfg
@@ -152,6 +162,7 @@ class Engine:
         self._release_requested = False
         self._rescan_requested = False
         self._number_mode = False
+        self._right_stick_mode = "wheel"
         self._left_layer = 0
         self._right_layer = 0
         # Per-side aim state: glyph/index while armed, cleared on release-commit.
@@ -160,6 +171,8 @@ class Engine:
         self._radial_armed: dict[str, bool] = {"left": False, "right": False}
         self._shift_held = False
         self._ctrl_held = False
+        self._arrow_held: str | None = None
+        self._arrow_next_repeat = 0.0
 
     # -- public API (any thread) ---------------------------------------------
 
@@ -184,28 +197,49 @@ class Engine:
 
     @property
     def input_mode(self) -> str:
-        return self._cfg.input_mode if self._cfg.input_mode in ("mouse", "keyboard") else "mouse"
+        return self._cfg.input_mode if self._cfg.input_mode in INPUT_MODES else "mouse"
 
     def set_input_mode(self, mode: str) -> None:
-        mode = "keyboard" if mode == "keyboard" else "mouse"
+        mode = mode if mode in INPUT_MODES else "mouse"
         if mode == self._cfg.input_mode:
             return
         self._request_release_all()
         self._cfg.input_mode = mode
         self._number_mode = False
+        self._right_stick_mode = "wheel"
+        self._release_stick_arrow()
         self._left_layer = 0
         self._right_layer = 0
         self._clear_radial_state()
         self._ui_event("input_mode", {"mode": mode})
 
     def toggle_input_mode(self) -> None:
-        self.set_input_mode("keyboard" if self.input_mode == "mouse" else "mouse")
+        self.set_input_mode(next_input_mode(self.input_mode))
 
     def toggle_number_mode(self) -> None:
         if self.input_mode != "keyboard":
             return
         self._number_mode = not self._number_mode
         self._ui_event("number_mode", {"enabled": self._number_mode})
+
+    @property
+    def right_stick_mode(self) -> str:
+        return self._right_stick_mode if self._right_stick_mode in RIGHT_STICK_MODES else "wheel"
+
+    def set_right_stick_mode(self, mode: str) -> None:
+        mode = "arrows" if mode == "arrows" else "wheel"
+        if mode == self._right_stick_mode:
+            return
+        self._release_stick_arrow()
+        self._acc_v = self._acc_h = 0.0
+        self._right_stick_mode = mode
+        self._ui_event("right_stick_mode", {"mode": mode})
+
+    def toggle_right_stick_mode(self) -> None:
+        if self.input_mode != "mouse":
+            return
+        self.set_right_stick_mode("arrows" if self.right_stick_mode == "wheel" else "wheel")
+        self.rumble()
 
     @property
     def config(self) -> Config:
@@ -337,6 +371,7 @@ class Engine:
             enabled=self._enabled,
             input_mode=self.input_mode,
             number_mode=self._number_mode,
+            right_stick_mode=self.right_stick_mode,
             playing_macro=self._player.playing,
             pressed=state.buttons if state else frozenset(),
             left_layer=self._left_layer,
@@ -366,20 +401,28 @@ class Engine:
         newly_pressed = state.buttons - self._prev_buttons
         newly_released = self._prev_buttons - state.buttons
         self._prev_buttons = state.buttons
-        keyboard = self.input_mode == "keyboard"
+        mode = self.input_mode
+        keyboard = mode == "keyboard"
+        game = mode == "game"
 
         interceptor = self._interceptor
         for name in sorted(newly_pressed):
-            if interceptor is not None:
+            if interceptor is not None and not game:
                 try:
                     if interceptor(name):
                         continue
                 except Exception:
                     log.exception("button interceptor failed")
             binding = cfg.binding(name)
+            if game:
+                # Passthrough: only the mode cycle is handled here.
+                if binding.type == "special" and binding.special == "toggle_input_mode":
+                    self._special(binding.special, pressed=True)
+                continue
             if not self._enabled:
                 if binding.type == "special" and binding.special in (
                     "toggle_enabled", "toggle_input_mode", "toggle_number_mode",
+                    "toggle_right_stick_mode",
                 ):
                     self._special(binding.special, pressed=True)
                 continue
@@ -392,17 +435,24 @@ class Engine:
         for name in sorted(newly_released):
             self._release(name)
 
-        if not self._enabled:
+        if game or not self._enabled:
             self._clear_radial_state()
+            self._release_stick_arrow()
             return
 
         if keyboard:
+            self._release_stick_arrow()
             self._keyboard_tick(cfg, state, newly_pressed, newly_released)
             return
 
         self._repeat(cfg, now)
         self._pointer(cfg, state, dt)
-        self._scroll(cfg, state, dt, now)
+        if self.right_stick_mode == "arrows":
+            self._acc_v = self._acc_h = 0.0
+            self._right_stick_arrows(cfg, state, now)
+        else:
+            self._release_stick_arrow()
+            self._scroll(cfg, state, dt, now)
 
     # -- actions --------------------------------------------------------------------
 
@@ -487,6 +537,8 @@ class Engine:
             self.toggle_input_mode()
         elif which == "toggle_number_mode":
             self.toggle_number_mode()
+        elif which == "toggle_right_stick_mode":
+            self.toggle_right_stick_mode()
         elif which == "open_settings":
             self._ui_event("open_settings", {})
         elif which == "toggle_overlay":
@@ -541,6 +593,7 @@ class Engine:
         mag = math.hypot(x, y)
         sel = select_side(
             side, x, y, layer=layer, number_mode=self._number_mode,
+            layers=self._cfg.keyboard.layers_for(side),
         )
         if sel is not None:
             self._radial_selection[side] = sel.glyph
@@ -616,6 +669,7 @@ class Engine:
             self._release(name)
         self._held.clear()
         self._clear_radial_state()
+        self._release_stick_arrow()
         self._shift_held = False
         self._ctrl_held = False
         self._player.stop()
@@ -688,3 +742,42 @@ class Engine:
                 win_input.hwheel(dh)
         except OSError:
             log.exception("scroll failed")
+
+    def _right_stick_arrows(self, cfg: Config, state: PadState, now: float) -> None:
+        """Map right stick to arrow keys, snapping to the nearest cardinal."""
+        deadzone = cfg.scroll.deadzone
+        mag = math.hypot(state.rx, state.ry)
+        direction = nearest_cardinal(state.rx, state.ry) if mag > deadzone else None
+        if direction != self._arrow_held:
+            self._release_stick_arrow()
+            if direction is not None:
+                self._press_stick_arrow(direction, now)
+            return
+        if direction is None or now < self._arrow_next_repeat:
+            return
+        interval = 1.0 / max(1.0, float(cfg.repeat_rate_hz))
+        self._arrow_next_repeat = now + interval
+        try:
+            win_input.key_down(keys.resolve_vk(direction))
+        except (KeyError, OSError):
+            log.exception("arrow repeat %s failed", direction)
+
+    def _press_stick_arrow(self, direction: str, now: float) -> None:
+        try:
+            win_input.key_down(keys.resolve_vk(direction))
+            self._arrow_held = direction
+            self._arrow_next_repeat = now + max(0.05, self._cfg.repeat_delay_ms / 1000.0)
+        except (KeyError, OSError):
+            log.exception("arrow press %s failed", direction)
+            self._arrow_held = None
+
+    def _release_stick_arrow(self) -> None:
+        direction = self._arrow_held
+        if direction is None:
+            return
+        self._arrow_held = None
+        self._arrow_next_repeat = 0.0
+        try:
+            win_input.key_up(keys.resolve_vk(direction))
+        except (KeyError, OSError):
+            log.exception("arrow release %s failed", direction)

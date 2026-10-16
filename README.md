@@ -6,7 +6,7 @@ converts controller input for as long as it is open:
 | Control | Does |
 |---|---|
 | **Left stick** | Moves the mouse cursor (dead zone, response curve and speed are tunable) |
-| **Right stick** | Scroll wheel: up/down scrolls vertically, left/right scrolls horizontally |
+| **Right stick** | Scroll wheel by default (up/down vertical, left/right horizontal). RS click toggles **arrows mode**, which snaps the stick to up/down/left/right arrow keys |
 | **Every other button** | A key / hotkey, a mouse button, a double click, typed text, a recorded macro, or an app function |
 
 Works with anything SDL2 recognizes as a game controller (Xbox, PlayStation,
@@ -23,16 +23,22 @@ Inspired by [JoyType](inspiration/JoyType-main) (Joy-Con / IINE -> desktop input
 | B | Right mouse button | RB | Shift (held) |
 | X | Middle mouse button | LT | Esc |
 | Y | Double click | RT | Enter |
-| LS (stick click) | Left click | RS (stick click) | Middle mouse (wheel click) |
-| D-pad | Arrow keys (auto-repeat) | Back / View | Switch mouse / keyboard mode |
+| LS (stick click) | Left click | RS (stick click) | Toggle right stick scroll / arrows |
+| D-pad | Arrow keys (auto-repeat) | Back / View | Cycle mouse / keyboard / game |
 | Start / Menu | Open settings | Guide | nothing |
 
-**Keyboard mode** (dual always-on radials): Back / View toggles mouse ↔ keyboard.
+**Game mode:** Back / View cycles mouse → keyboard → game. In game mode the app
+injects nothing — no cursor, keys, wheels, or macros — so the pad is a normal
+controller. Press Back / View again (or the overlay mode button) to return to mouse.
+
+**Keyboard mode** (dual always-on radials): Back / View advances to game mode.
 Both sticks drive a 6-letter wheel at all times — push past **95%** deflection to
 aim a sector, then release toward center to type it. Stick clicks swap each side’s
-letter layer. Vowels are on the shoulders/triggers (LB=A, LT=E, RB=I, RT=O);
-A=space, B=backspace, D-pad ↑=`.`, ←=`,`. Guide / Pause toggles number mode.
-See **Settings → Keyboard**.
+letter layer. Defaults: left `T H N R S L` / alt `G Y P B W ?`; right `D C U M F V`
+/ alt `K J X Q Z !`. Letter assortments are editable in **Settings → Keyboard**
+(every consonant plus `?` and `!` must appear exactly once). Vowels are on the
+shoulders/triggers (LB=A, LT=E, RB=I, RT=O); A=space, B=backspace, D-pad ↑=`.`,
+←=`,`. Guide / Pause toggles number mode.
 
 Change any of these in **Settings -> Buttons**.
 

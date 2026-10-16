@@ -21,7 +21,7 @@ from . import APP_NAME
 
 log = logging.getLogger(__name__)
 
-CONFIG_VERSION = 4
+CONFIG_VERSION = 5
 
 # Logical controller buttons (SDL GameController naming, Xbox-style labels).
 BUTTONS: tuple[str, ...] = (
@@ -56,18 +56,31 @@ ACTION_TYPE_LABELS = {
 
 SPECIALS = (
     "toggle_enabled", "toggle_input_mode", "toggle_number_mode",
+    "toggle_right_stick_mode",
     "open_settings", "stop_macros", "toggle_overlay",
 )
 SPECIAL_LABELS = {
     "toggle_enabled": "Pause / resume conversion",
-    "toggle_input_mode": "Switch mouse / keyboard mode",
+    "toggle_input_mode": "Cycle mouse / keyboard / game",
     "toggle_number_mode": "Toggle number mode (keyboard)",
+    "toggle_right_stick_mode": "Switch right stick scroll / arrows",
     "open_settings": "Open settings window",
     "stop_macros": "Stop any playing macro",
     "toggle_overlay": "Collapse / expand overlay",
 }
 
-INPUT_MODES = ("mouse", "keyboard")
+RIGHT_STICK_MODES = ("wheel", "arrows")
+
+INPUT_MODES = ("mouse", "keyboard", "game")
+
+
+def next_input_mode(mode: str) -> str:
+    """mouse → keyboard → game → mouse."""
+    try:
+        index = INPUT_MODES.index(mode)
+    except ValueError:
+        index = 0
+    return INPUT_MODES[(index + 1) % len(INPUT_MODES)]
 
 
 @dataclass
@@ -186,11 +199,46 @@ class OverlaySettings:
     opacity: float = 0.94
 
 
+def _default_wheel(key: str) -> list[str]:
+    from .radial import default_layer_map
+    return default_layer_map()[key]
+
+
 @dataclass
 class KeyboardSettings:
-    """Radial keyboard-mode options."""
+    """Radial keyboard-mode options and editable letter wheels."""
 
     show_hud: bool = True
+    # Six glyphs each, clockwise from stick-up. Must together cover REQUIRED_WHEEL_GLYPHS.
+    left: list[str] = field(default_factory=lambda: _default_wheel("left"))
+    left_alt: list[str] = field(default_factory=lambda: _default_wheel("left_alt"))
+    right: list[str] = field(default_factory=lambda: _default_wheel("right"))
+    right_alt: list[str] = field(default_factory=lambda: _default_wheel("right_alt"))
+
+    def layers_for(self, side: str) -> tuple[tuple[str, ...], ...]:
+        if side == "left":
+            return (tuple(self.left), tuple(self.left_alt))
+        return (tuple(self.right), tuple(self.right_alt))
+
+    def reset_wheels(self) -> None:
+        from .radial import default_layer_map
+        defaults = default_layer_map()
+        self.left = defaults["left"]
+        self.left_alt = defaults["left_alt"]
+        self.right = defaults["right"]
+        self.right_alt = defaults["right_alt"]
+
+    def apply_wheels(
+        self,
+        left: list[str],
+        left_alt: list[str],
+        right: list[str],
+        right_alt: list[str],
+    ) -> None:
+        self.left = list(left)
+        self.left_alt = list(left_alt)
+        self.right = list(right)
+        self.right_alt = list(right_alt)
 
 
 def _default_bindings() -> dict[str, Binding]:
@@ -204,7 +252,7 @@ def _default_bindings() -> dict[str, Binding]:
         "LT": Binding.for_key("esc"),
         "RT": Binding.for_key("enter"),
         "LS": Binding.for_mouse("left"),
-        "RS": Binding.for_mouse("middle"),
+        "RS": Binding.for_special("toggle_right_stick_mode"),
         "BACK": Binding.for_special("toggle_input_mode"),
         "START": Binding.for_special("open_settings"),
         "GUIDE": Binding.for_special("toggle_number_mode"),
@@ -241,6 +289,32 @@ def _bindings_from_dict(data: Any) -> dict[str, Binding]:
             if name in data:
                 out[name] = Binding.from_dict(data[name])
     return out
+
+
+def _migrate_rs_middle_to_stick_mode(bindings: dict[str, Binding]) -> None:
+    """Old default RS = middle mouse → scroll/arrows toggle (config v5)."""
+    rs = bindings.get("RS")
+    if rs and rs.type == "mouse" and rs.button == "middle":
+        bindings["RS"] = Binding.for_special("toggle_right_stick_mode")
+
+
+def _load_keyboard(kb: KeyboardSettings, section: Any) -> None:
+    from .radial import default_layer_map, normalize_layer, validate_wheel_layout
+
+    if not isinstance(section, dict):
+        return
+    if "show_hud" in section:
+        try:
+            kb.show_hud = bool(section["show_hud"])
+        except (TypeError, ValueError):
+            pass
+    defaults = default_layer_map()
+    for key in ("left", "left_alt", "right", "right_alt"):
+        if key in section:
+            setattr(kb, key, normalize_layer(section[key], fallback=defaults[key]))
+    issues = validate_wheel_layout(kb.left, kb.left_alt, kb.right, kb.right_alt)
+    if not issues.ok:
+        kb.reset_wheels()
 
 
 @dataclass
@@ -295,7 +369,7 @@ class Config:
     macros: dict[str, Macro] = field(default_factory=dict)
     profiles: dict[str, DeviceProfile] = field(default_factory=dict)
     active_device: str = ""       # GUID of the profile currently loaded into pointer/scroll/bindings
-    input_mode: str = "mouse"    # mouse | keyboard
+    input_mode: str = "mouse"    # mouse | keyboard | game
     trigger_threshold: float = 0.45
     repeat_delay_ms: int = 400
     repeat_rate_hz: float = 25.0
@@ -318,10 +392,15 @@ class Config:
         if not isinstance(data, dict):
             return cfg
 
+        try:
+            old_version = int(data.get("version", 0) or 0)
+        except (TypeError, ValueError):
+            old_version = 0
+
         _fill_dataclass(cfg.pointer, data.get("pointer"))
         _fill_dataclass(cfg.scroll, data.get("scroll"))
         _fill_dataclass(cfg.overlay, data.get("overlay"))
-        _fill_dataclass(cfg.keyboard, data.get("keyboard"))
+        _load_keyboard(cfg.keyboard, data.get("keyboard"))
         for key in ("trigger_threshold", "repeat_delay_ms", "repeat_rate_hz", "poll_hz",
                     "haptics", "start_enabled", "preferred_device", "active_device", "input_mode"):
             if key in data:
@@ -365,6 +444,10 @@ class Config:
             if legacy_guid:
                 cfg.profiles[legacy_guid] = cfg.snapshot_active(name="")
                 cfg.active_device = legacy_guid
+        if old_version < 5:
+            _migrate_rs_middle_to_stick_mode(cfg.bindings)
+            for profile in cfg.profiles.values():
+                _migrate_rs_middle_to_stick_mode(profile.bindings)
         cfg.version = CONFIG_VERSION
         return cfg
 

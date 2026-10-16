@@ -12,7 +12,12 @@ from .. import __version__
 from ..config import BUTTON_LABELS, BUTTONS, Binding, Config, Macro, config_path, log_path
 from ..engine import EngineStatus, shape_axis, shape_radial
 from ..macros import summarize
-from ..radial import LEFT_LAYERS, LEFT_NUMBERS, RIGHT_LAYERS, RIGHT_NUMBERS
+from ..radial import (
+    LEFT_NUMBERS,
+    RIGHT_NUMBERS,
+    SECTORS,
+    validate_wheel_layout,
+)
 from . import theme
 from .binding_dialog import BindingDialog
 from .dialogs import confirm, labeled_scale
@@ -183,7 +188,7 @@ class SettingsWindow(tk.Toplevel):
         ttk.Checkbutton(pf, text="Invert vertical", variable=self.v_inv_y, command=self._sticks_changed).grid(
             row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
-        sf = ttk.LabelFrame(left, text="Right stick - scroll wheel", padding=10)
+        sf = ttk.LabelFrame(left, text="Right stick - scroll wheel (RS click toggles arrows)", padding=10)
         sf.pack(fill="x", pady=(10, 0))
         self.v_sspeed = tk.DoubleVar(value=s.speed)
         self.v_hspeed = tk.DoubleVar(value=s.horizontal_speed)
@@ -305,9 +310,10 @@ class SettingsWindow(tk.Toplevel):
         ttk.Label(t, text="Keyboard mode (dual radials)", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             t,
-            text="Back / View switches mouse ↔ keyboard. Both stick wheels are always live: "
+            text="Back / View cycles mouse → keyboard → game. Both stick wheels are always live: "
                  "push a stick past 95% to aim a letter, then release toward center to type it. "
-                 "Guide / Pause toggles number mode.",
+                 "Guide / Pause toggles number mode. Edit letter wheels below — every consonant "
+                 "plus ? and ! must appear exactly once before you can save.",
             style="Dim.TLabel", wraplength=theme.px(700), justify="left",
         ).pack(anchor="w", pady=(0, 8))
 
@@ -319,28 +325,53 @@ class SettingsWindow(tk.Toplevel):
             variable=self.v_hud, command=self._keyboard_opts_changed,
         ).pack(anchor="w")
 
-        frame = ttk.Frame(t)
-        frame.pack(fill="both", expand=True)
-        self.radial_tree = ttk.Treeview(
-            frame, columns=("wheel", "layer0", "layer1", "numbers"), show="headings", selectmode="browse",
+        wheels = ttk.LabelFrame(t, text="Letter wheels (clockwise from stick-up)", padding=10)
+        wheels.pack(fill="x", pady=(0, 8))
+        self._wheel_entries: dict[str, list[tk.Entry]] = {}
+        rows = (
+            ("left", "Left default"),
+            ("left_alt", "Left alt (LS click)"),
+            ("right", "Right default"),
+            ("right_alt", "Right alt (RS click)"),
         )
-        self.radial_tree.heading("wheel", text="Wheel")
-        self.radial_tree.heading("layer0", text="Default (clockwise from up)")
-        self.radial_tree.heading("layer1", text="Alt (stick click)")
-        self.radial_tree.heading("numbers", text="Number mode")
-        self.radial_tree.column("wheel", width=100, anchor="w")
-        self.radial_tree.column("layer0", width=220, anchor="w")
-        self.radial_tree.column("layer1", width=220, anchor="w")
-        self.radial_tree.column("numbers", width=140, anchor="w")
-        sb = ttk.Scrollbar(frame, orient="vertical", command=self.radial_tree.yview)
-        self.radial_tree.configure(yscrollcommand=sb.set)
-        self.radial_tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        for side in ("left", "right"):
-            self.radial_tree.insert("", "end", iid=side, values=("", "", "", ""))
+        for r, (key, label) in enumerate(rows):
+            ttk.Label(wheels, text=label, width=20).grid(row=r, column=0, sticky="w", pady=3)
+            cells: list[tk.Entry] = []
+            for c in range(SECTORS):
+                entry = tk.Entry(
+                    wheels, width=3, justify="center", font=theme.FONT_BOLD,
+                    bg=theme.BG_RAISED, fg=theme.FG, insertbackground=theme.FG,
+                    relief="flat", highlightthickness=1,
+                    highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT,
+                )
+                entry.grid(row=r, column=c + 1, padx=3, pady=2)
+                entry.bind("<KeyRelease>", lambda _e: self._on_wheel_edit())
+                entry.bind("<<Paste>>", lambda _e: self.after_idle(self._on_wheel_edit))
+                cells.append(entry)
+            self._wheel_entries[key] = cells
+
+        self.wheel_status = ttk.Label(wheels, text="", style="Dim.TLabel", wraplength=theme.px(640))
+        self.wheel_status.grid(row=len(rows), column=0, columnspan=SECTORS + 1, sticky="w", pady=(8, 0))
+
+        btns = ttk.Frame(wheels)
+        btns.grid(row=len(rows) + 1, column=0, columnspan=SECTORS + 1, sticky="ew", pady=(10, 0))
+        self.btn_save_wheels = ttk.Button(
+            btns, text="Save letter layout", style="Accent.TButton", command=self._save_wheel_layout,
+        )
+        self.btn_save_wheels.pack(side="left")
+        ttk.Button(btns, text="Reset to defaults", command=self._reset_wheel_layout).pack(side="left", padx=(8, 0))
+        ttk.Button(btns, text="Revert unsaved", command=self._load_wheel_entries).pack(side="left", padx=(8, 0))
+
+        nums = ttk.LabelFrame(t, text="Number mode (fixed)", padding=10)
+        nums.pack(fill="x", pady=(0, 8))
+        ttk.Label(
+            nums,
+            text=f"Left: {' '.join(LEFT_NUMBERS)}    Right: {' '.join(RIGHT_NUMBERS)}",
+            style="Dim.TLabel",
+        ).pack(anchor="w")
 
         extras = ttk.LabelFrame(t, text="Also in keyboard mode", padding=10)
-        extras.pack(fill="x", pady=(10, 0))
+        extras.pack(fill="x", pady=(0, 0))
         ttk.Label(
             extras,
             text="Vowels: LB → A · LT → E · RB → I · RT → O\n"
@@ -348,21 +379,79 @@ class SettingsWindow(tk.Toplevel):
                  "LS click swaps left wheel layer · RS click swaps right wheel layer",
             style="Dim.TLabel", justify="left",
         ).pack(anchor="w")
-        self._refresh_radial_legend()
+        self._load_wheel_entries()
 
-    def _refresh_radial_legend(self) -> None:
-        self.radial_tree.item("left", values=(
-            "Left stick",
-            " ".join(LEFT_LAYERS[0]),
-            " ".join(LEFT_LAYERS[1]),
-            " ".join(LEFT_NUMBERS),
-        ))
-        self.radial_tree.item("right", values=(
-            "Right stick",
-            " ".join(RIGHT_LAYERS[0]),
-            " ".join(RIGHT_LAYERS[1]),
-            " ".join(RIGHT_NUMBERS),
-        ))
+    def _read_wheel_draft(self) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {}
+        for key, entries in self._wheel_entries.items():
+            glyphs: list[str] = []
+            for entry in entries:
+                raw = entry.get().strip()
+                glyphs.append(raw[:1].upper() if raw else "")
+            out[key] = glyphs
+        return out
+
+    def _on_wheel_edit(self) -> None:
+        draft = self._read_wheel_draft()
+        # Keep each cell to a single character.
+        for key, entries in self._wheel_entries.items():
+            for i, entry in enumerate(entries):
+                want = draft[key][i]
+                if entry.get() != want:
+                    entry.delete(0, "end")
+                    if want:
+                        entry.insert(0, want)
+        issues = validate_wheel_layout(
+            draft["left"], draft["left_alt"], draft["right"], draft["right_alt"],
+        )
+        dupes = issues.duplicates
+        for key, entries in self._wheel_entries.items():
+            for entry in entries:
+                glyph = entry.get().strip().upper()
+                if glyph and glyph in dupes:
+                    entry.configure(bg="#5a2030", fg="#ffd0d6")
+                else:
+                    entry.configure(bg=theme.BG_RAISED, fg=theme.FG)
+        self.wheel_status.configure(text=issues.summary())
+        state = "normal" if issues.ok else "disabled"
+        self.btn_save_wheels.configure(state=state)
+
+    def _load_wheel_entries(self) -> None:
+        kb = self.cfg.keyboard
+        values = {
+            "left": kb.left,
+            "left_alt": kb.left_alt,
+            "right": kb.right,
+            "right_alt": kb.right_alt,
+        }
+        for key, entries in self._wheel_entries.items():
+            glyphs = values[key]
+            for i, entry in enumerate(entries):
+                entry.delete(0, "end")
+                if i < len(glyphs) and glyphs[i]:
+                    entry.insert(0, glyphs[i])
+        self._on_wheel_edit()
+
+    def _save_wheel_layout(self) -> None:
+        draft = self._read_wheel_draft()
+        issues = validate_wheel_layout(
+            draft["left"], draft["left_alt"], draft["right"], draft["right_alt"],
+        )
+        if not issues.ok:
+            self._on_wheel_edit()
+            return
+        self.cfg.keyboard.apply_wheels(
+            draft["left"], draft["left_alt"], draft["right"], draft["right_alt"],
+        )
+        self.app.config_changed()
+        self.app.sync_radial_hud()
+        self.wheel_status.configure(text="Saved. " + issues.summary())
+
+    def _reset_wheel_layout(self) -> None:
+        self.cfg.keyboard.reset_wheels()
+        self._load_wheel_entries()
+        self.app.config_changed()
+        self.app.sync_radial_hud()
 
     def _keyboard_opts_changed(self) -> None:
         self.cfg.keyboard.show_hud = bool(self.v_hud.get())
@@ -569,7 +658,7 @@ class SettingsWindow(tk.Toplevel):
         self._load_stick_vars()
         self._load_general_vars()
         self._refresh_bindings()
-        self._refresh_radial_legend()
+        self._load_wheel_entries()
         self._refresh_macros()
         self._refresh_devices()
         self.v_hud.set(self.cfg.keyboard.show_hud)

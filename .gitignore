@@ -1,2 +1,13 @@
 # Reference / third-party material (not part of this app)
 inspiration/
+
+# Local Python environment (thousands of installed packages; recreate with build_exe.bat)
+.venv/
+
+# Bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# PyInstaller work files (the built exe in dist/ is kept)
+build/

@@ -142,13 +142,17 @@ class App:
             mode = str(data.get("mode", "mouse"))
             self.config.input_mode = mode
             self.save_config()
-            label = "Keyboard mode" if mode == "keyboard" else "Mouse mode"
+            label = {"keyboard": "Keyboard mode", "game": "Game mode"}.get(mode, "Mouse mode")
             self.overlay.flash(label, 1.2)
             self.sync_radial_hud()
         elif kind == "number_mode":
             on = bool(data.get("enabled"))
             self.overlay.flash("Number mode" if on else "Letter mode", 1.0)
             self.sync_radial_hud()
+        elif kind == "right_stick_mode":
+            mode = str(data.get("mode", "wheel"))
+            label = "Right stick: arrows" if mode == "arrows" else "Right stick: scroll"
+            self.overlay.flash(label, 1.2)
 
     # -- engine-thread callback ---------------------------------------------------------
 
