@@ -21,7 +21,7 @@ from . import APP_NAME
 
 log = logging.getLogger(__name__)
 
-CONFIG_VERSION = 5
+CONFIG_VERSION = 6
 
 # Logical controller buttons (SDL GameController naming, Xbox-style labels).
 BUTTONS: tuple[str, ...] = (
@@ -176,8 +176,8 @@ class Macro:
 class PointerSettings:
     deadzone: float = 0.12
     speed: float = 1500.0        # pixels / second at full deflection
-    acceleration: float = 7.0    # response exponent; 1 = linear, >1 = finer near center
-    precision_scale: float = 0.25
+    acceleration: float = 11.0   # response exponent; 1 = linear, higher = quieter center, harder rim
+    precision_scale: float = 0.50
     invert_y: bool = False
 
 
@@ -186,7 +186,7 @@ class ScrollSettings:
     deadzone: float = 0.18
     speed: float = 14.0          # notches / second (vertical) at full deflection
     horizontal_speed: float = 10.0
-    acceleration: float = 7.0
+    acceleration: float = 11.0
     smooth: bool = True          # emit sub-notch wheel deltas (browsers, Office)
     invert_vertical: bool = False
     invert_horizontal: bool = False
@@ -335,6 +335,22 @@ def _migrate_rs_middle_to_stick_mode(bindings: dict[str, Binding]) -> None:
     rs = bindings.get("RS")
     if rs and rs.type == "mouse" and rs.button == "middle":
         bindings["RS"] = Binding.for_special("toggle_right_stick_mode")
+
+
+def _migrate_dramatic_stick_curve(cfg: "Config") -> None:
+    """v6: louder sub-rim and a steeper curve, when the v5 defaults were left as-is."""
+    _bump_stick_curve(cfg.pointer, cfg.scroll)
+    for profile in cfg.profiles.values():
+        _bump_stick_curve(profile.pointer, profile.scroll)
+
+
+def _bump_stick_curve(pointer: PointerSettings, scroll: ScrollSettings) -> None:
+    if abs(pointer.acceleration - 7.0) < 1e-6:
+        pointer.acceleration = 11.0
+    if abs(pointer.precision_scale - 0.25) < 1e-6:
+        pointer.precision_scale = 0.50
+    if abs(scroll.acceleration - 7.0) < 1e-6:
+        scroll.acceleration = 11.0
 
 
 def _load_keyboard(kb: KeyboardSettings, section: Any) -> None:
@@ -489,6 +505,8 @@ class Config:
             _migrate_rs_middle_to_stick_mode(cfg.bindings)
             for profile in cfg.profiles.values():
                 _migrate_rs_middle_to_stick_mode(profile.bindings)
+        if old_version < 6:
+            _migrate_dramatic_stick_curve(cfg)
         cfg.version = CONFIG_VERSION
         return cfg
 

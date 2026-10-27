@@ -39,10 +39,14 @@ _MIC_ARM_S = 0.40
 _LAYER_SPECIALS = ("toggle_left_layer", "toggle_right_layer")
 # Post-deadzone stick fractions for the three-band response curve:
 #   [0, _PRECISION_END)  precision band (scaled by precision_scale + response curve)
-#   [_PRECISION_END, _FULL_SPEED_AT)  ramp from precision ceiling up to full speed
+#   [_PRECISION_END, _FULL_SPEED_AT)  steep ramp from the precision ceiling to full speed
 #   [_FULL_SPEED_AT, 1]  full speed
 _PRECISION_END = 0.90
-_FULL_SPEED_AT = 0.98
+_FULL_SPEED_AT = 0.96
+# Extra power on the outer rim so the last push snaps instead of easing in.
+_RIM_EXPONENT = 2.4
+# Right-stick scroll has no sub-rim slider; this is its precision-band ceiling.
+SCROLL_PRECISION = 0.55
 _CARDINAL_DIRS = ("up", "right", "down", "left")
 
 
@@ -94,9 +98,11 @@ def _curve_magnitude(norm: float, accel: float, *, precision_scale: float = 1.0)
     """Map post-deadzone deflection [0,1] to output strength [0,1].
 
     - Under 90%: precision band — response curve scaled by ``precision_scale``
-      (0 at center → ``precision_scale`` at 90%).
-    - 90%–98%: curves from that precision ceiling up to full speed.
-    - 98%+: full speed (1.0).
+      (0 at center → ``precision_scale`` at 90%). Higher accel stays quieter
+      longer, then climbs hard into the sub-rim ceiling.
+    - 90%–96%: a much steeper rim than the precision band, from that ceiling
+      up to full speed.
+    - 96%+: full speed (1.0).
     """
     if norm >= _FULL_SPEED_AT:
         return 1.0
@@ -105,9 +111,9 @@ def _curve_magnitude(norm: float, accel: float, *, precision_scale: float = 1.0)
     if norm <= _PRECISION_END:
         t = norm / _PRECISION_END
         return slow * (t ** exp)
-    # Ramp 90% → 98%: ease from ``slow`` toward 1.0 (steeper with higher accel).
+    # 90% → 96%: hang near the sub-rim ceiling, then snap to full speed.
     u = (norm - _PRECISION_END) / (_FULL_SPEED_AT - _PRECISION_END)
-    blend = u ** exp
+    blend = u ** (exp * _RIM_EXPONENT)
     return slow + (1.0 - slow) * blend
 
 
@@ -840,10 +846,9 @@ class Engine:
 
     def _scroll(self, cfg: Config, state: PadState, dt: float, now: float) -> None:
         s = cfg.scroll
-        scroll_precision = 0.35
-        v = shape_axis(state.ry, s.deadzone, s.acceleration, precision_scale=scroll_precision)
+        v = shape_axis(state.ry, s.deadzone, s.acceleration, precision_scale=SCROLL_PRECISION)
         h = (
-            shape_axis(state.rx, s.deadzone, s.acceleration, precision_scale=scroll_precision)
+            shape_axis(state.rx, s.deadzone, s.acceleration, precision_scale=SCROLL_PRECISION)
             if s.horizontal_enabled else 0.0
         )
         if v == 0.0 and h == 0.0:

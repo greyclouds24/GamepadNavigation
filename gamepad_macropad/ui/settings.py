@@ -18,7 +18,7 @@ from ..config import (
     config_path,
     log_path,
 )
-from ..engine import EngineStatus, shape_axis, shape_radial
+from ..engine import SCROLL_PRECISION, EngineStatus, shape_axis, shape_radial
 from ..macros import summarize
 from ..radial import (
     LEFT_NUMBERS,
@@ -189,7 +189,7 @@ class SettingsWindow(tk.Toplevel):
         self.v_prec = tk.DoubleVar(value=p.precision_scale)
         self.v_inv_y = tk.BooleanVar(value=p.invert_y)
         labeled_scale(pf, "Speed (px/s)", self.v_speed, 200, 5000, fmt="{:.0f}", row=0, command=self._sticks_changed)
-        labeled_scale(pf, "Response curve", self.v_accel, 1.0, 14.0, row=1, command=self._sticks_changed)
+        labeled_scale(pf, "Response curve", self.v_accel, 1.0, 20.0, row=1, command=self._sticks_changed)
         labeled_scale(pf, "Dead zone", self.v_dz, 0.0, 0.5, row=2, command=self._sticks_changed)
         labeled_scale(pf, "Sub-rim speed (precision band)", self.v_prec, 0.05, 1.0, row=3,
                       command=self._sticks_changed)
@@ -210,7 +210,7 @@ class SettingsWindow(tk.Toplevel):
                       command=self._sticks_changed)
         labeled_scale(sf, "Horizontal speed", self.v_hspeed, 1, 60, fmt="{:.0f}", row=1, command=self._sticks_changed)
         labeled_scale(sf, "Dead zone", self.v_sdz, 0.0, 0.6, row=2, command=self._sticks_changed)
-        labeled_scale(sf, "Response curve", self.v_saccel, 1.0, 14.0, row=3, command=self._sticks_changed)
+        labeled_scale(sf, "Response curve", self.v_saccel, 1.0, 20.0, row=3, command=self._sticks_changed)
         checks = ttk.Frame(sf)
         checks.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
         ttk.Checkbutton(checks, text="Smooth scrolling", variable=self.v_smooth, command=self._sticks_changed).grid(
@@ -292,12 +292,11 @@ class SettingsWindow(tk.Toplevel):
         p, s = self.cfg.pointer, self.cfg.scroll
         ox, oy, _ = shape_radial(lx, ly, p.deadzone, p.acceleration, precision_scale=p.precision_scale)
         self._draw_stick(0, (lx, ly), (ox, oy), p.deadzone)
-        scroll_precision = 0.35
         sx = (
-            shape_axis(rx, s.deadzone, s.acceleration, precision_scale=scroll_precision)
+            shape_axis(rx, s.deadzone, s.acceleration, precision_scale=SCROLL_PRECISION)
             if s.horizontal_enabled else 0.0
         )
-        sy = shape_axis(ry, s.deadzone, s.acceleration, precision_scale=scroll_precision)
+        sy = shape_axis(ry, s.deadzone, s.acceleration, precision_scale=SCROLL_PRECISION)
         self._draw_stick(1, (rx, ry), (sx, sy), s.deadzone)
 
     def _draw_stick(self, index: int, raw: tuple[float, float], out: tuple[float, float], dz: float) -> None:

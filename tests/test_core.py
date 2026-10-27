@@ -220,6 +220,11 @@ def test_curve_precision_band_ramp_and_full_speed():
     _, _, slow = shape_radial(0.5, 0.0, 0.0, accel, precision_scale=0.2)
     _, _, fast = shape_radial(0.5, 0.0, 0.0, accel, precision_scale=0.5)
     assert slow < fast
+    # A steep curve stays near the sub-rim ceiling until the last push, then snaps.
+    _, _, held = shape_radial(0.94, 0.0, 0.0, 11.0, precision_scale=0.5)
+    _, _, snapped = shape_radial(0.96, 0.0, 0.0, 11.0, precision_scale=0.5)
+    assert held < 0.62
+    assert snapped == 1.0
 
 
 def test_shape_axis_sign_and_deadzone():
